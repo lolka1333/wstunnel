@@ -24,7 +24,7 @@ pub static JWT_HEADER_PREFIX: LazyLock<String> = LazyLock::new(|| {
         "aws-token.",  // AWS style
     ];
     
-    let variant = session_variants[rand::thread_rng().gen_range(0..session_variants.len())];
+    let variant = session_variants[rand::rng().random_range(0..session_variants.len())];
     format!("{}{}", variant, generate_realistic_session_id())
 });
 
@@ -36,8 +36,8 @@ static JWT_KEY: LazyLock<(Header, EncodingKey)> = LazyLock::new(|| {
         .as_nanos();
     
     // Добавляем дополнительную энтропию
-    let mut rng = rand::thread_rng();
-    let random_salt: u128 = rng.gen();
+    let mut rng = rand::rng();
+    let random_salt: u128 = rng.random();
     let key_material = now ^ random_salt;
     
     (
@@ -115,12 +115,12 @@ fn generate_realistic_session_id() -> String {
     use base64::Engine;
     
     // Имитация различных форматов session ID
-    let format_type = rand::thread_rng().gen_range(0..3);
+    let format_type = rand::rng().random_range(0..3);
     
     match format_type {
         0 => {
             // CloudFlare style: base64url encoded random bytes (22 chars)
-            let random_bytes: [u8; 16] = rand::thread_rng().gen();
+            let random_bytes: [u8; 16] = rand::rng().random();
             base64::engine::general_purpose::URL_SAFE_NO_PAD
                 .encode(random_bytes)
         }
@@ -130,7 +130,7 @@ fn generate_realistic_session_id() -> String {
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
                 .as_secs();
-            let random: u64 = rand::thread_rng().gen();
+            let random: u64 = rand::rng().random();
             format!("{:016x}{:016x}", timestamp, random)
         }
         _ => {

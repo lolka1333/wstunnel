@@ -95,7 +95,7 @@ pub(super) fn extract_tunnel_info(req: &Request<Incoming>) -> anyhow::Result<Tok
         .headers()
         .get(SEC_WEBSOCKET_PROTOCOL)
         .and_then(|header| header.to_str().ok())
-        .and_then(|header| header.split_once(JWT_HEADER_PREFIX))
+        .and_then(|header| header.split_once(JWT_HEADER_PREFIX.as_str()))
         .map(|(_prefix, jwt)| jwt)
         .or_else(|| req.headers().get(COOKIE).and_then(|header| header.to_str().ok()))
         .unwrap_or_default();

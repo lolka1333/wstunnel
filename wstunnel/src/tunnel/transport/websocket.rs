@@ -255,7 +255,7 @@ pub async fn connect(
         .header(SEC_WEBSOCKET_VERSION, "13")
         .header(
             SEC_WEBSOCKET_PROTOCOL,
-            format!("v1, {}{}", JWT_HEADER_PREFIX, tunnel_to_jwt_token(request_id, dest_addr)),
+            format!("v1, {}{}", JWT_HEADER_PREFIX.as_str(), tunnel_to_jwt_token(request_id, dest_addr)),
         )
         .version(hyper::Version::HTTP_11);
 
