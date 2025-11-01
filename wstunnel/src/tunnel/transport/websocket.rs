@@ -4,6 +4,7 @@ use crate::tunnel::client::WsClient;
 use crate::tunnel::client::l4_transport_stream::{TransportReadHalf, TransportStream, TransportWriteHalf};
 use crate::tunnel::transport::headers_from_file;
 use crate::tunnel::transport::jwt::{JWT_HEADER_PREFIX, tunnel_to_jwt_token};
+use crate::tunnel::transport::TransportScheme;
 use anyhow::{Context, anyhow};
 use bytes::{Bytes, BytesMut};
 use fastwebsockets::{CloseCode, Frame, OpCode, Payload, Role, WebSocket, WebSocketRead, WebSocketWrite};
@@ -43,9 +44,12 @@ impl WebsocketTunnelWrite {
         ws: WebSocketWrite<TransportWriteHalf>,
         (pending_operations, notify): (Receiver<Frame<'static>>, Arc<Notify>),
     ) -> Self {
+        // Use more realistic initial buffer sizes to reduce TCP statistical anomalies
+        // Start with a common TCP packet size to avoid suspicious empty/burst patterns
+        let initial_capacity = 1460; // Common TCP MSS (MTU 1500 - 40 bytes overhead)
         Self {
             inner: ws,
-            buf: BytesMut::with_capacity(MAX_PACKET_LENGTH),
+            buf: BytesMut::with_capacity(initial_capacity),
             pending_operations,
             pending_ops_notify: notify,
             in_flight_ping: AtomicUsize::new(0),
@@ -82,10 +86,20 @@ impl TunnelWrite for WebsocketTunnelWrite {
         // For the buffer to not be a bottleneck when the TCP window scale.
         // We clamp it to 32Mb to avoid unbounded growth and as websocket max frame size is 64Mb by default
         // For udp, the buffer will never grow.
+        // Growth pattern is optimized to reduce TCP statistical anomalies (avoid suspicious burst patterns)
         const _32_MB: usize = 32 * 1024 * 1024;
         buf.clear();
         if buf.capacity() == read_len && buf.capacity() < _32_MB {
-            let new_size = buf.capacity() + (buf.capacity() / 4); // grow buffer by 1.25 %
+            // Use more conservative growth to avoid suspicious patterns
+            // Start growing more gradually, then accelerate
+            let growth_factor = if buf.capacity() < 64 * 1024 {
+                2 // Double for small buffers
+            } else if buf.capacity() < 512 * 1024 {
+                5 // Grow by 20% for medium buffers
+            } else {
+                4 // Grow by 25% for large buffers (original behavior)
+            };
+            let new_size = buf.capacity() + (buf.capacity() / growth_factor);
             buf.reserve(new_size);
             trace!(
                 "Buffer {} Mb {} {} {}",
@@ -245,6 +259,13 @@ pub async fn connect(
         Err(err) => Err(anyhow!("failed to get a connection to the server from the pool: {err:?}")),
     }?;
 
+    // Automatically enable masking for unencrypted WebSocket connections (helps bypass DPI)
+    // TLS connections don't need masking, but unencrypted WS connections benefit from it
+    let should_mask = client_cfg.websocket_mask_frame || 
+        matches!(client_cfg.remote_addr.scheme(), TransportScheme::Ws | TransportScheme::Http);
+    
+    let jwt_token = tunnel_to_jwt_token(request_id, dest_addr);
+    
     let mut req = Request::builder()
         .method("GET")
         .uri(format!("/{}/events", &client_cfg.http_upgrade_path_prefix))
@@ -253,12 +274,8 @@ pub async fn connect(
         .header(CONNECTION, "upgrade")
         .header(SEC_WEBSOCKET_KEY, fastwebsockets::handshake::generate_key())
         .header(SEC_WEBSOCKET_VERSION, "13")
-        .header(
-            SEC_WEBSOCKET_PROTOCOL,
-            format!("v1, {}{}", JWT_HEADER_PREFIX.as_str(), tunnel_to_jwt_token(request_id, dest_addr)),
-        )
         .version(hyper::Version::HTTP_11);
-
+    
     let headers = match req.headers_mut() {
         Some(h) => h,
         None => {
@@ -269,6 +286,39 @@ pub async fn connect(
             ));
         }
     };
+    
+    // Store JWT in Cookie for better obfuscation (looks like a normal session cookie)
+    // This helps bypass DPI that looks for suspicious headers
+    use hyper::header::{COOKIE, HeaderValue, USER_AGENT, ACCEPT_LANGUAGE, ACCEPT_ENCODING, CACHE_CONTROL};
+    if !headers.contains_key(COOKIE) {
+        if let Ok(cookie_val) = HeaderValue::from_str(&format!("session={}", jwt_token)) {
+            headers.insert(COOKIE, cookie_val);
+        } else {
+            // Fallback to Sec-WebSocket-Protocol if Cookie value is invalid
+            headers.insert(SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_str(&format!("v1, {}{}", JWT_HEADER_PREFIX, jwt_token)).unwrap());
+        }
+    } else {
+        // If Cookie already exists, add JWT to Sec-WebSocket-Protocol
+        headers.insert(SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_str(&format!("v1, {}{}", JWT_HEADER_PREFIX, jwt_token)).unwrap());
+    }
+    
+    // Add realistic browser headers if not already set (helps bypass DPI)
+    // These headers make the traffic look more like a normal browser WebSocket connection
+    if !headers.contains_key(USER_AGENT) {
+        // Use Chrome user agent to blend in with normal traffic
+        let _ = headers.insert(USER_AGENT, HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"));
+    }
+    if !headers.contains_key(ACCEPT_LANGUAGE) {
+        let _ = headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"));
+    }
+    if !headers.contains_key(ACCEPT_ENCODING) {
+        let _ = headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip, deflate, br"));
+    }
+    if !headers.contains_key(CACHE_CONTROL) {
+        let _ = headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    }
+    
+    // Apply custom headers (user-defined headers override defaults)
     for (k, v) in &client_cfg.http_headers {
         let _ = headers.remove(k);
         headers.append(k, v.clone());
@@ -303,7 +353,7 @@ pub async fn connect(
         .await
         .with_context(|| format!("failed to do websocket handshake with the server {:?}", client_cfg.remote_addr))?;
 
-    let (ws_rx, ws_tx) = mk_websocket_tunnel(ws, Role::Client, client_cfg.websocket_mask_frame)?;
+    let (ws_rx, ws_tx) = mk_websocket_tunnel(ws, Role::Client, should_mask)?;
     Ok((ws_rx, ws_tx, response.into_parts().0))
 }
 

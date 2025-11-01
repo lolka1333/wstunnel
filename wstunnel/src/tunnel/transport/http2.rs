@@ -8,7 +8,7 @@ use bytes::{Bytes, BytesMut};
 use http_body_util::{BodyExt, BodyStream, StreamBody};
 use hyper::Request;
 use hyper::body::{Frame, Incoming};
-use hyper::header::{AUTHORIZATION, CONTENT_TYPE, COOKIE};
+use hyper::header::{AUTHORIZATION, CONTENT_TYPE, COOKIE, USER_AGENT, ACCEPT_LANGUAGE, ACCEPT_ENCODING};
 use hyper::http::response::Parts;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use log::{debug, error, warn};
@@ -152,6 +152,8 @@ pub async fn connect(
                 (Some(headers), host)
             });
 
+    let jwt_token = tunnel_to_jwt_token(request_id, dest_addr);
+    
     let mut req = Request::builder()
         .method("POST")
         .uri(format!(
@@ -162,7 +164,7 @@ pub async fn connect(
                 .unwrap_or_else(|| client.config.http_header_host.to_str().unwrap_or("")),
             &client.config.http_upgrade_path_prefix
         ))
-        .header(COOKIE, tunnel_to_jwt_token(request_id, dest_addr))
+        .header(COOKIE, format!("session={}", jwt_token))
         .header(CONTENT_TYPE, "application/json")
         .version(hyper::Version::HTTP_2);
 
@@ -176,6 +178,18 @@ pub async fn connect(
             ));
         }
     };
+    // Add realistic browser headers if not already set (helps bypass DPI)
+    if !headers.contains_key(USER_AGENT) {
+        let _ = headers.insert(USER_AGENT, hyper::header::HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"));
+    }
+    if !headers.contains_key(ACCEPT_LANGUAGE) {
+        let _ = headers.insert(ACCEPT_LANGUAGE, hyper::header::HeaderValue::from_static("en-US,en;q=0.9"));
+    }
+    if !headers.contains_key(ACCEPT_ENCODING) {
+        let _ = headers.insert(ACCEPT_ENCODING, hyper::header::HeaderValue::from_static("gzip, deflate, br"));
+    }
+    
+    // Apply custom headers (user-defined headers override defaults)
     for (k, v) in &client.config.http_headers {
         let _ = headers.remove(k);
         headers.append(k, v.clone());

@@ -91,16 +91,40 @@ pub(super) enum PathPrefixErr {
 
 #[inline]
 pub(super) fn extract_tunnel_info(req: &Request<Incoming>) -> anyhow::Result<TokenData<JwtTunnelConfig>> {
+    // First try to extract from Sec-WebSocket-Protocol header
     let jwt = req
         .headers()
         .get(SEC_WEBSOCKET_PROTOCOL)
         .and_then(|header| header.to_str().ok())
-        .and_then(|header| header.split_once(JWT_HEADER_PREFIX.as_str()))
-        .map(|(_prefix, jwt)| jwt)
-        .or_else(|| req.headers().get(COOKIE).and_then(|header| header.to_str().ok()))
+        .and_then(|header| header.split_once(JWT_HEADER_PREFIX))
+        .map(|(_prefix, jwt)| jwt.to_string())
+        // Fallback to Cookie header (for better DPI evasion)
+        .or_else(|| {
+            req.headers()
+                .get(COOKIE)
+                .and_then(|header| header.to_str().ok())
+                .and_then(|cookie_str| {
+                    // Look for "session=TOKEN" format
+                    cookie_str
+                        .split(';')
+                        .find_map(|part| {
+                            let part = part.trim();
+                            if part.starts_with("session=") {
+                                Some(part[8..].trim().to_string())
+                            } else {
+                                None
+                            }
+                        })
+                        // If no "session=" found, try to parse the whole cookie as JWT
+                        .or_else(|| {
+                            // Some implementations might put JWT directly in cookie
+                            Some(cookie_str.trim().to_string())
+                        })
+                })
+        })
         .unwrap_or_default();
 
-    jwt_token_to_tunnel(jwt).with_context(|| {
+    jwt_token_to_tunnel(&jwt).with_context(|| {
         let msg = format!(
             "error while decoding jwt for tunnel info header {:?}",
             req.headers().get(SEC_WEBSOCKET_PROTOCOL)
