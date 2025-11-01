@@ -11,7 +11,7 @@ use fastwebsockets::{CloseCode, Frame, OpCode, Payload, Role, WebSocket, WebSock
 use http_body_util::Empty;
 use hyper::Request;
 use hyper::header::{AUTHORIZATION, SEC_WEBSOCKET_PROTOCOL, SEC_WEBSOCKET_VERSION, UPGRADE};
-use hyper::header::{CONNECTION, HOST, SEC_WEBSOCKET_KEY};
+use hyper::header::{CONNECTION, HOST, SEC_WEBSOCKET_KEY, ORIGIN, SEC_WEBSOCKET_EXTENSIONS};
 use hyper::http::response::Parts;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioExecutor;
@@ -44,12 +44,16 @@ impl WebsocketTunnelWrite {
         ws: WebSocketWrite<TransportWriteHalf>,
         (pending_operations, notify): (Receiver<Frame<'static>>, Arc<Notify>),
     ) -> Self {
-        // Use more realistic initial buffer sizes to reduce TCP statistical anomalies
-        // Start with a common TCP packet size to avoid suspicious empty/burst patterns
-        let initial_capacity = 1460; // Common TCP MSS (MTU 1500 - 40 bytes overhead)
+        // Buffer capacity must be at least MAX_PACKET_LENGTH to satisfy debug_assert! in io.rs:124
+        // which checks that chunk_mut().len() >= MAX_PACKET_LENGTH
+        // We start with MAX_PACKET_LENGTH to satisfy the assertion, but the buffer growth
+        // pattern (in the write() method) is optimized for realistic TCP packet sizes to avoid
+        // DPI detection based on statistical anomalies.
+        let mut buf = BytesMut::with_capacity(MAX_PACKET_LENGTH);
+        
         Self {
             inner: ws,
-            buf: BytesMut::with_capacity(initial_capacity),
+            buf,
             pending_operations,
             pending_ops_notify: notify,
             in_flight_ping: AtomicUsize::new(0),
@@ -270,14 +274,17 @@ pub async fn connect(
     
     let jwt_token = tunnel_to_jwt_token(request_id, dest_addr);
     
+    // Build URI with realistic path structure (helps ML-based DPI see normal API patterns)
+    // Real web apps often use paths like /api/v1/events or /ws/stream
+    let uri_path = if client_cfg.http_upgrade_path_prefix == "v1" {
+        format!("/api/v1/events") // More realistic API path
+    } else {
+        format!("/{}/events", &client_cfg.http_upgrade_path_prefix)
+    };
+    
     let mut req = Request::builder()
         .method("GET")
-        .uri(format!("/{}/events", &client_cfg.http_upgrade_path_prefix))
-        .header(HOST, &client_cfg.http_header_host)
-        .header(UPGRADE, "websocket")
-        .header(CONNECTION, "upgrade")
-        .header(SEC_WEBSOCKET_KEY, fastwebsockets::handshake::generate_key())
-        .header(SEC_WEBSOCKET_VERSION, "13")
+        .uri(&uri_path)
         .version(hyper::Version::HTTP_11);
     
     let headers = match req.headers_mut() {
@@ -291,25 +298,60 @@ pub async fn connect(
         }
     };
     
+    // Build headers in Chrome's exact order for maximum ML-DPI evasion
+    // Chrome sends headers in a specific order that ML models learn to recognize
+    // Order: Host, Connection, Upgrade, Sec-WebSocket-Key, Sec-WebSocket-Version, Origin, Sec-WebSocket-Extensions, User-Agent, etc.
+    let host_val = client_cfg.http_header_host.clone();
+    let ws_key = fastwebsockets::handshake::generate_key();
+    
     // Store JWT in Cookie for better obfuscation (looks like a normal session cookie)
     // This helps bypass DPI that looks for suspicious headers
-    use hyper::header::{COOKIE, HeaderValue, USER_AGENT, ACCEPT_LANGUAGE, ACCEPT_ENCODING, CACHE_CONTROL};
+    use hyper::header::{COOKIE, HeaderValue, USER_AGENT, ACCEPT_LANGUAGE, ACCEPT_ENCODING, CACHE_CONTROL, ORIGIN, SEC_WEBSOCKET_EXTENSIONS};
+    
+    // Chrome header order (critical for ML evasion):
+    headers.insert(HOST, host_val);
+    headers.insert(CONNECTION, HeaderValue::from_static("Upgrade"));
+    headers.insert(UPGRADE, HeaderValue::from_static("websocket"));
+    headers.insert(SEC_WEBSOCKET_KEY, HeaderValue::from_str(&ws_key).unwrap());
+    headers.insert(SEC_WEBSOCKET_VERSION, HeaderValue::from_static("13"));
+    
+    // Add Origin header (Chrome always sends it) - use the host header value
+    if !headers.contains_key(ORIGIN) {
+        let origin_val = client_cfg.http_header_host.to_str().ok()
+            .map(|h| {
+                let scheme = match client_cfg.remote_addr.scheme() {
+                    TransportScheme::Wss | TransportScheme::Https => "https",
+                    _ => "http",
+                };
+                format!("{}://{}", scheme, h)
+            });
+        if let Some(origin) = origin_val {
+            if let Ok(origin_header) = HeaderValue::from_str(&origin) {
+                let _ = headers.insert(ORIGIN, origin_header);
+            }
+        }
+    }
+    
+    // Sec-WebSocket-Extensions header (Chrome sends this)
+    if !headers.contains_key(SEC_WEBSOCKET_EXTENSIONS) {
+        let _ = headers.insert(SEC_WEBSOCKET_EXTENSIONS, HeaderValue::from_static("permessage-deflate; client_max_window_bits"));
+    }
+    
+    // Store JWT in Cookie (preferred) or fallback to Sec-WebSocket-Protocol
     if !headers.contains_key(COOKIE) {
         if let Ok(cookie_val) = HeaderValue::from_str(&format!("session={}", jwt_token)) {
             headers.insert(COOKIE, cookie_val);
         } else {
             // Fallback to Sec-WebSocket-Protocol if Cookie value is invalid
-            headers.insert(SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_str(&format!("v1, {}{}", JWT_HEADER_PREFIX, jwt_token)).unwrap());
+            headers.insert(SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_str(&format!("chat, superchat, {}{}", JWT_HEADER_PREFIX, jwt_token)).unwrap());
         }
     } else {
-        // If Cookie already exists, add JWT to Sec-WebSocket-Protocol
-        headers.insert(SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_str(&format!("v1, {}{}", JWT_HEADER_PREFIX, jwt_token)).unwrap());
+        // If Cookie already exists, add JWT to Sec-WebSocket-Protocol with realistic subprotocols
+        headers.insert(SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_str(&format!("chat, superchat, {}{}", JWT_HEADER_PREFIX, jwt_token)).unwrap());
     }
     
-    // Add realistic browser headers if not already set (helps bypass DPI)
-    // These headers make the traffic look more like a normal browser WebSocket connection
+    // Add realistic browser headers in Chrome's order (helps bypass ML-based DPI)
     if !headers.contains_key(USER_AGENT) {
-        // Use Chrome user agent to blend in with normal traffic
         let _ = headers.insert(USER_AGENT, HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"));
     }
     if !headers.contains_key(ACCEPT_LANGUAGE) {

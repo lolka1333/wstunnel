@@ -82,9 +82,21 @@ pub(super) async fn ws_server_upgrade(
         return bad_request();
     }
 
+    // Select appropriate subprotocol for response (ML-DPI evasion)
+    // If client requested "chat, superchat", respond with "chat" (first preferred)
+    // Otherwise fallback to "v1" for backward compatibility
+    let requested_protocol = req.headers().get(SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.split(',').next().map(|p| p.trim()));
+    
+    let protocol_response = match requested_protocol {
+        Some("chat") | Some("superchat") => "chat", // Realistic subprotocol for ML evasion
+        _ => "v1", // Backward compatibility
+    };
+    
     response
         .headers_mut()
-        .insert(SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_static("v1"));
+        .insert(SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_str(protocol_response).unwrap_or_else(|_| HeaderValue::from_static("v1")));
 
     response
 }

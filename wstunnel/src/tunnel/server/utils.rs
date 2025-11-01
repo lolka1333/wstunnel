@@ -72,7 +72,20 @@ pub(super) fn extract_path_prefix(path: &str) -> Result<&str, PathPrefixErr> {
         return Err(PathPrefixErr::BadPathPrefix);
     }
 
-    let (l, r) = path[1..].split_once('/').ok_or(PathPrefixErr::BadUpgradeRequest)?;
+    // Support both old format (/v1/events) and new realistic format (/api/v1/events)
+    // This helps ML-DPI evasion by using common API path patterns
+    let path_trimmed = path.trim_start_matches('/');
+    
+    // Try /api/v1/events format first (more realistic)
+    if let Some(stripped) = path_trimmed.strip_prefix("api/") {
+        let (prefix, suffix) = stripped.split_once('/').ok_or(PathPrefixErr::BadUpgradeRequest)?;
+        if suffix.ends_with("events") {
+            return Ok(prefix);
+        }
+    }
+    
+    // Fallback to old format /v1/events
+    let (l, r) = path_trimmed.split_once('/').ok_or(PathPrefixErr::BadUpgradeRequest)?;
 
     match r.ends_with("events") {
         true => Ok(l),
@@ -92,12 +105,24 @@ pub(super) enum PathPrefixErr {
 #[inline]
 pub(super) fn extract_tunnel_info(req: &Request<Incoming>) -> anyhow::Result<TokenData<JwtTunnelConfig>> {
     // First try to extract from Sec-WebSocket-Protocol header
+    // Support both formats: "chat, superchat, authorization.bearer.TOKEN" and "v1, authorization.bearer.TOKEN"
     let jwt = req
         .headers()
         .get(SEC_WEBSOCKET_PROTOCOL)
         .and_then(|header| header.to_str().ok())
-        .and_then(|header| header.split_once(JWT_HEADER_PREFIX))
-        .map(|(_prefix, jwt)| jwt.to_string())
+        .and_then(|header| {
+            // Look for JWT_HEADER_PREFIX in the header string (might be after other subprotocols)
+            header.split(',')
+                .find_map(|part| {
+                    let part = part.trim();
+                    if part.contains(JWT_HEADER_PREFIX) {
+                        part.split_once(JWT_HEADER_PREFIX)
+                            .map(|(_prefix, jwt)| jwt.trim().to_string())
+                    } else {
+                        None
+                    }
+                })
+        })
         // Fallback to Cookie header (for better DPI evasion)
         .or_else(|| {
             req.headers()
