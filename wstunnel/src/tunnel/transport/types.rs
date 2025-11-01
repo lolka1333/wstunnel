@@ -28,9 +28,12 @@ impl TransportScheme {
     pub fn alpn_protocols(&self) -> Vec<Vec<u8>> {
         match self {
             Self::Ws => vec![],
+            // Chrome/Firefox ALPN order for WebSocket: http/1.1 is standard
+            // Some browsers also offer h2, but http/1.1 is preferred for WS
             Self::Wss => vec![b"http/1.1".to_vec()],
             Self::Http => vec![],
-            Self::Https => vec![b"h2".to_vec()],
+            // Chrome ALPN order for HTTP/2: h2, http/1.1 (h2 preferred)
+            Self::Https => vec![b"h2".to_vec(), b"http/1.1".to_vec()],
         }
     }
 }

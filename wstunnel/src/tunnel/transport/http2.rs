@@ -217,12 +217,17 @@ pub async fn connect(
     })?;
     debug!("with HTTP upgrade request {req:?}");
     let transport = pooled_cnx.deref_mut().take().unwrap();
+    // Configure HTTP/2 with Chrome-like settings for better DPI evasion
+    // Chrome uses adaptive window sizing and specific keep-alive settings
     let (mut request_sender, cnx) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
         .timer(TokioTimer::new())
-        .adaptive_window(true)
+        .adaptive_window(true) // Chrome uses adaptive window sizing
+        .initial_connection_window_size(Some(10 * 1024 * 1024)) // 10MB - Chrome default
+        .initial_stream_window_size(Some(6 * 1024 * 1024)) // 6MB - Chrome default
+        .max_frame_size(Some(16384)) // 16KB - Chrome default max frame size
         .keep_alive_interval(client.config.websocket_ping_frequency)
         .keep_alive_timeout(Duration::from_secs(10))
-        .keep_alive_while_idle(false)
+        .keep_alive_while_idle(false) // Chrome doesn't keep idle connections alive
         .handshake(TokioIo::new(transport))
         .await
         .with_context(|| format!("failed to do http2 handshake with the server {:?}", client.config.remote_addr))?;

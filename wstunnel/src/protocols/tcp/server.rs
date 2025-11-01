@@ -24,6 +24,21 @@ pub fn configure_socket(socket: SockRef, so_mark: SoMark) -> Result<(), anyhow::
         .set_tcp_nodelay(true)
         .with_context(|| format!("cannot set no_delay on socket: {:?}", io::Error::last_os_error()))?;
 
+    // Optimize TCP buffers to match typical browser behavior and reduce DPI detection
+    // Chrome uses default TCP buffer sizes (typically 64KB-256KB), but we use realistic values
+    // to avoid statistical anomalies that aggressive DPI might flag
+    
+    // Set send/receive buffer sizes to common browser defaults (helps bypass TCP analysis)
+    // Most modern browsers use 64KB-256KB buffers, but we use 128KB as a good middle ground
+    const TCP_BUFFER_SIZE: usize = 128 * 1024; // 128KB - typical browser default
+    
+    if let Err(e) = socket.set_send_buffer_size(TCP_BUFFER_SIZE) {
+        debug!("Cannot set TCP send buffer size: {:?}", e);
+    }
+    if let Err(e) = socket.set_recv_buffer_size(TCP_BUFFER_SIZE) {
+        debug!("Cannot set TCP recv buffer size: {:?}", e);
+    }
+
     #[cfg(not(any(target_os = "windows", target_os = "openbsd")))]
     let tcp_keepalive = TcpKeepalive::new()
         .with_time(Duration::from_secs(60))
