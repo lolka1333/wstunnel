@@ -6,6 +6,7 @@ use std::str::FromStr;
 
 use tracing::error;
 
+pub mod adversarial_ml;
 pub mod cookies;
 pub mod http2;
 pub mod io;

@@ -355,7 +355,7 @@ mod tests {
             server_port,
             SoMark::new(None),
             Duration::from_secs(1),
-            &DnsResolver::System,
+            &DnsResolver::System { cache: crate::protocols::dns::DnsCache::new() },
         )
         .await
         .unwrap();

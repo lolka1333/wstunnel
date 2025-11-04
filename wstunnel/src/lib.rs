@@ -185,6 +185,36 @@ pub async fn create_client(
         None  // Use defaults
     };
 
+    // ✅ Configure adversarial ML defense if enabled
+    let adversarial_config = if args.adversarial_ml_defense {
+        use crate::tunnel::transport::adversarial_ml::{AdversarialConfig, PaddingStrategy};
+        
+        // Parse padding strategy
+        let padding_strategy = match args.adversarial_padding_strategy.as_str() {
+            "front" => PaddingStrategy::Front,
+            "total" => PaddingStrategy::Total,
+            "directional" => PaddingStrategy::DirectionalPadding,
+            "adaptive" => PaddingStrategy::Adaptive,
+            "random" => PaddingStrategy::Random,
+            _ => {
+                warn!("Unknown padding strategy '{}', using 'directional'", args.adversarial_padding_strategy);
+                PaddingStrategy::DirectionalPadding
+            }
+        };
+        
+        Some(AdversarialConfig {
+            enable_padding: true,
+            enable_iat_randomization: args.adversarial_iat_randomization > 0.0,
+            enable_dummy_packets: args.adversarial_dummy_packets,
+            padding_strategy,
+            iat_randomization_level: args.adversarial_iat_randomization.clamp(0.0, 1.0),
+            dummy_packet_rate: args.adversarial_dummy_packet_rate,
+            target_profile: args.traffic_profile.clone(),
+        })
+    } else {
+        None
+    };
+
     let client_config = WsClientConfig {
         remote_addr: TransportAddr::new(
             TransportScheme::from_str(args.remote_addr.scheme()).unwrap(),
@@ -208,6 +238,7 @@ pub async fn create_client(
         dns_resolver,
         http_proxy,
         traffic_profile,
+        adversarial_config,
     };
 
     let client = WsClient::new(

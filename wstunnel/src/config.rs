@@ -231,6 +231,67 @@ pub struct Client {
     ))]
     pub traffic_profile: Option<String>,
 
+    /// Enable adversarial ML defense against traffic flow watermarking
+    /// This uses advanced padding and timing techniques to evade ML-based DPI classifiers
+    /// that analyze packet size sequences and inter-arrival times (IAT)
+    /// Recommended for high-censorship environments
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        default_value = "false",
+        verbatim_doc_comment
+    ))]
+    pub adversarial_ml_defense: bool,
+
+    /// Adversarial padding strategy for ML evasion
+    /// Options: front, total, directional, adaptive, random
+    /// - front: Pad first packet in burst (defeats early classifiers)
+    /// - total: Pad to fixed total burst size (defeats burst-based classifiers)
+    /// - directional: Make small packets bigger (efficient, recommended)
+    /// - adaptive: Dynamically choose strategy (most sophisticated)
+    /// - random: Random padding (baseline defense)
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        value_name = "STRATEGY",
+        default_value = "directional",
+        verbatim_doc_comment,
+        requires = "adversarial_ml_defense"
+    ))]
+    pub adversarial_padding_strategy: String,
+
+    /// IAT (Inter-Arrival Time) randomization level for ML evasion (0.0-1.0)
+    /// Higher values add more timing variation but may increase latency
+    /// 0.0 = no randomization, 0.5 = moderate (recommended), 1.0 = aggressive
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        value_name = "LEVEL",
+        default_value = "0.5",
+        verbatim_doc_comment,
+        requires = "adversarial_ml_defense"
+    ))]
+    pub adversarial_iat_randomization: f64,
+
+    /// Enable dummy packet injection for flow obfuscation (adds overhead)
+    /// Injects fake packets to change traffic statistics
+    /// Only enable if under active ML-based detection
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        default_value = "false",
+        verbatim_doc_comment,
+        requires = "adversarial_ml_defense"
+    ))]
+    pub adversarial_dummy_packets: bool,
+
+    /// Dummy packet injection rate (packets per second)
+    /// Only used if --adversarial-dummy-packets is enabled
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        value_name = "RATE",
+        default_value = "5.0",
+        verbatim_doc_comment,
+        requires = "adversarial_dummy_packets"
+    ))]
+    pub adversarial_dummy_packet_rate: f64,
+
     /// Dns resolver to use to lookup ips of domain name. Can be specified multiple time
     /// Example:
     ///  dns://1.1.1.1 for using udp
