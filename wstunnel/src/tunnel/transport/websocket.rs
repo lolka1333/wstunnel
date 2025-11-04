@@ -1,5 +1,5 @@
 use super::io::{MAX_PACKET_LENGTH, TunnelRead, TunnelWrite};
-use super::packet_shaping::{PacketSizeStrategy, add_realistic_padding, calculate_realistic_buffer_growth, get_realistic_packet_size};
+use super::packet_shaping::{calculate_realistic_buffer_growth};
 use crate::tunnel::RemoteAddr;
 use crate::tunnel::client::WsClient;
 use crate::tunnel::client::l4_transport_stream::{TransportReadHalf, TransportStream, TransportWriteHalf};
@@ -68,22 +68,18 @@ impl TunnelWrite for WebsocketTunnelWrite {
     }
 
     async fn write(&mut self) -> Result<(), io::Error> {
-        let read_len = self.buf.len();
         let buf = &mut self.buf;
 
-        // For better DPI evasion, use realistic packet sizes that mimic browser behavior
-        // This includes MTU-aware sizing, avoiding round numbers, and adding realistic padding
+        // For better DPI evasion, ensure WebSocket frames use realistic sizes
+        // We DON'T modify the tunneled data (SSH/etc needs exact bytes!)
+        // Instead, we just use the data as-is - the natural variation in read sizes
+        // from TCP will create realistic browser-like patterns
         
-        // Calculate realistic target size based on actual data length
-        // Use Adaptive strategy for natural mix of MTU-aware and browser-typical sizes
-        let target_size = get_realistic_packet_size(read_len, PacketSizeStrategy::Adaptive);
-        
-        // Add realistic padding if needed (mimics HTTP headers, JSON structure)
-        // This makes statistical analysis harder as packets look like legitimate web traffic
-        if target_size > read_len && target_size - read_len < 512 {
-            // Only add padding for reasonable amounts (< 512 bytes overhead is realistic)
-            add_realistic_padding(buf, target_size);
-        }
+        // Note: Adding padding to tunneled data breaks binary protocols like SSH!
+        // Realistic packet sizes come from:
+        // 1. Natural TCP read patterns (varies with network conditions)
+        // 2. Buffer growth patterns (already mimics browser behavior)
+        // 3. Variable WebSocket frame sizes (browser-typical from actual data)
         
         let actual_len = buf.len();
         let ret = self
