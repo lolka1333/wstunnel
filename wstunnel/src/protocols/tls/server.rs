@@ -189,7 +189,17 @@ pub fn tls_connector(
     let session_cache = Arc::new(ClientSessionMemoryCache::new(200));
     config.resumption = Resumption::store(session_cache);
     
-    info!("TLS config initialized with Chrome-like settings (session resumption enabled)");
+    // ✅ 0-RTT Early Data: Chrome supports TLS 1.3 0-RTT for faster reconnections
+    // This allows sending application data in the first flight (no extra RTT)
+    // Only works with resumed sessions, provides significant latency reduction
+    config.enable_early_data = true;
+    
+    // ✅ Max Fragment Size: Chrome uses 16KB TLS record size (optimal for most networks)
+    // Larger fragments reduce overhead but may cause issues with some middleboxes
+    // 16KB is a good balance and matches Chrome's default behavior
+    config.max_fragment_size = Some(16384);
+    
+    info!("TLS config initialized with Chrome-like settings (session resumption + 0-RTT + 16KB fragments)");
     
     let tls_connector = TlsConnector::from(Arc::new(config));
     Ok(tls_connector)
@@ -246,6 +256,24 @@ pub async fn connect(client_cfg: &WsClientConfig, tcp_stream: TcpStream) -> anyh
             client_cfg.remote_addr.port()
         );
     }
+
+    // ✅ Handshake Jitter: Add realistic delay before TLS handshake
+    // Real browsers don't initiate TLS immediately after TCP connect
+    // There's natural delay from CPU scheduling, event loop processing, etc.
+    // Chrome typically has 5-20ms delay between TCP connect and Client Hello
+    // This helps avoid "too perfect" timing that can be detected by ML-based DPI
+    use std::time::Duration;
+    let jitter_ms = {
+        // Use a simple pseudo-random based on current timestamp
+        // We don't need cryptographic randomness here, just natural variation
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or(Duration::from_secs(0));
+        let nanos = now.as_nanos();
+        // Generate jitter between 5-20ms (realistic browser delay)
+        5 + ((nanos % 16) as u64)
+    };
+    tokio::time::sleep(Duration::from_millis(jitter_ms)).await;
 
     let tls_connector = tls_config.tls_connector();
     let tls_stream = tls_connector.connect(sni, tcp_stream).await?;
