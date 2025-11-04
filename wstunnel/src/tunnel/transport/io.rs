@@ -109,7 +109,23 @@ pub async fn propagate_local_to_remote(
 
     // We do our own pin_mut! to avoid shadowing timeout and be able to reset it, on next loop iteration
     // We reuse the future to avoid creating a timer in the tight loop
-    let frequency = ping_frequency.unwrap_or(Duration::from_secs(3600 * 24));
+    // ✅ Add jitter to ping frequency to mimic browser behavior (browsers don't ping with perfect timing)
+    let base_frequency = ping_frequency.unwrap_or(Duration::from_secs(3600 * 24));
+    let frequency = if ping_frequency.is_some() {
+        // Add ±15% jitter to ping frequency (realistic browser variation)
+        // Chrome/Firefox don't ping with perfect timing due to event loop scheduling
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or(Duration::from_secs(0));
+        let jitter_percent = ((now.as_nanos() % 30) as i64) - 15; // -15% to +15%
+        let base_ms = base_frequency.as_millis() as i64;
+        let jitter_ms = base_ms * jitter_percent / 100;
+        let final_ms = (base_ms + jitter_ms).max(1000) as u64; // At least 1 second
+        Duration::from_millis(final_ms)
+    } else {
+        base_frequency
+    };
+    
     let start_at = Instant::now().checked_add(frequency).unwrap_or_else(Instant::now);
     let timeout = tokio::time::interval_at(start_at, frequency);
     let should_close = close_tx.closed().fuse();
@@ -146,8 +162,21 @@ pub async fn propagate_local_to_remote(
             _ = &mut should_close => break,
 
             _ = timeout.tick(), if ping_frequency.is_some() => {
-                debug!("sending ping to keep connection alive");
+                debug!("sending ping to keep connection alive (with realistic jitter)");
                 ws_tx.ping().await?;
+                
+                // ✅ Apply new jitter for next ping (avoid perfect timing patterns)
+                // This creates natural variation in ping intervals like real browsers
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or(Duration::from_secs(0));
+                let jitter_percent = ((now.as_nanos() % 30) as i64) - 15; // -15% to +15%
+                let base_ms = base_frequency.as_millis() as i64;
+                let jitter_ms = base_ms * jitter_percent / 100;
+                let final_ms = (base_ms + jitter_ms).max(1000) as u64; // At least 1 second
+                let new_period = Duration::from_millis(final_ms);
+                timeout.reset_after(new_period);
+                
                 continue;
             }
         };

@@ -358,6 +358,33 @@ pub async fn connect(
     if !headers.contains_key(USER_AGENT) {
         let _ = headers.insert(USER_AGENT, HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"));
     }
+    
+    // ✅ Chrome Client Hints (Sec-CH-*) - CRITICAL for ML-based DPI evasion
+    // Chrome 90+ sends these headers by default. Their absence is a strong signal for ML models!
+    // These headers are increasingly used by CDNs and DPI systems for fingerprinting
+    use hyper::header::HeaderName;
+    let sec_ch_ua = HeaderName::from_static("sec-ch-ua");
+    let sec_ch_ua_mobile = HeaderName::from_static("sec-ch-ua-mobile");
+    let sec_ch_ua_platform = HeaderName::from_static("sec-ch-ua-platform");
+    
+    if !headers.contains_key(&sec_ch_ua) {
+        // Chrome 131 Client Hints format
+        let _ = headers.insert(sec_ch_ua, HeaderValue::from_static("\"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\", \"Google Chrome\";v=\"131\""));
+    }
+    if !headers.contains_key(&sec_ch_ua_mobile) {
+        let _ = headers.insert(sec_ch_ua_mobile, HeaderValue::from_static("?0"));
+    }
+    if !headers.contains_key(&sec_ch_ua_platform) {
+        let _ = headers.insert(sec_ch_ua_platform, HeaderValue::from_static("\"Windows\""));
+    }
+    
+    // ✅ Accept header - browsers always send this
+    use hyper::header::ACCEPT;
+    if !headers.contains_key(ACCEPT) {
+        // WebSocket upgrade typically uses */* accept header
+        let _ = headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
+    }
+    
     if !headers.contains_key(ACCEPT_LANGUAGE) {
         let _ = headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"));
     }
@@ -366,6 +393,31 @@ pub async fn connect(
     }
     if !headers.contains_key(CACHE_CONTROL) {
         let _ = headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    }
+    
+    // ✅ Referer header - realistic navigation pattern
+    // Browsers typically send Referer when upgrading WebSocket from a page
+    // Pattern mimics user navigating from main site to establishing WebSocket
+    use hyper::header::REFERER;
+    if !headers.contains_key(REFERER) {
+        // Generate realistic referer based on the target host
+        if let Ok(host_str) = client_cfg.http_header_host.to_str() {
+            let scheme = match client_cfg.remote_addr.scheme() {
+                TransportScheme::Wss | TransportScheme::Https => "https",
+                _ => "http",
+            };
+            // Realistic referer patterns: from main page or dashboard/app page
+            // Use simple variation based on current time to avoid always same referer
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or(std::time::Duration::from_secs(0));
+            let variant = (now.as_secs() % 4) as usize;
+            let referer_paths = ["", "/app", "/dashboard", "/api"];
+            let referer = format!("{}://{}{}", scheme, host_str, referer_paths[variant]);
+            if let Ok(referer_val) = HeaderValue::from_str(&referer) {
+                let _ = headers.insert(REFERER, referer_val);
+            }
+        }
     }
     
     // Apply custom headers (user-defined headers override defaults)
