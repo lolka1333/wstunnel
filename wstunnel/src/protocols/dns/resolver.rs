@@ -1,4 +1,5 @@
 use crate::protocols;
+use crate::protocols::dns::DnsCache;
 use crate::somark::SoMark;
 use anyhow::{Context, anyhow};
 use futures_util::{FutureExt, TryFutureExt};
@@ -40,20 +41,46 @@ fn sort_socket_addrs(socket_addrs: &[SocketAddr], prefer_ipv6: bool) -> impl Ite
 }
 
 #[allow(clippy::large_enum_variant)] // System variant never used mostly
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum DnsResolver {
-    System,
+    System {
+        cache: DnsCache,
+    },
     TrustDns {
         resolver: Box<Resolver<GenericConnector<TokioRuntimeProviderWithSoMark>>>,
         prefer_ipv6: bool,
+        cache: DnsCache,
     },
+}
+
+// Manual Debug impl to avoid printing cache contents
+impl std::fmt::Debug for DnsResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::System { .. } => write!(f, "DnsResolver::System"),
+            Self::TrustDns { prefer_ipv6, .. } => write!(f, "DnsResolver::TrustDns {{ prefer_ipv6: {} }}", prefer_ipv6),
+        }
+    }
 }
 
 impl DnsResolver {
     pub async fn lookup_host(&self, domain: &str, port: u16) -> anyhow::Result<Vec<SocketAddr>> {
-        let addrs = match self {
-            Self::System => tokio::net::lookup_host(format!("{domain}:{port}")).await?.collect(),
-            Self::TrustDns { resolver, prefer_ipv6 } => {
+        // ✅ Browser-like DNS caching: Check cache first
+        // Chrome caches DNS for 60-300 seconds to avoid excessive lookups
+        let cache = match self {
+            Self::System { cache } => cache,
+            Self::TrustDns { cache, .. } => cache,
+        };
+        
+        // Try cache first (browser behavior)
+        if let Some(cached_addrs) = cache.get(domain, port) {
+            return Ok(cached_addrs);
+        }
+        
+        // Cache miss - perform actual DNS lookup
+        let addrs: Vec<SocketAddr> = match self {
+            Self::System { .. } => tokio::net::lookup_host(format!("{domain}:{port}")).await?.collect(),
+            Self::TrustDns { resolver, prefer_ipv6, .. } => {
                 let addrs: Vec<_> = resolver
                     .lookup_ip(domain)
                     .await?
@@ -66,6 +93,10 @@ impl DnsResolver {
                 sort_socket_addrs(&addrs, *prefer_ipv6).copied().collect()
             }
         };
+
+        // ✅ Store in cache for future lookups (browser behavior)
+        // TTL will be 60-300 seconds with variation (realistic)
+        cache.store(domain, port, addrs.clone());
 
         Ok(addrs)
     }
@@ -188,18 +219,23 @@ impl DnsResolver {
                 warn!(
                     "Fall-backing to system dns resolver. You should consider specifying a dns resolver. To avoid performance issue"
                 );
-                return Ok(Self::System);
+                return Ok(Self::System {
+                    cache: DnsCache::new(),
+                });
             };
 
             return Ok(Self::TrustDns {
                 resolver: Box::new(mk_resolver(cfg, opts, proxy, so_mark)),
                 prefer_ipv6,
+                cache: DnsCache::new(),
             });
         };
 
         // if one is specified as system, use the default one from libc
         if resolvers.iter().any(|r| r.scheme() == "system") {
-            return Ok(Self::System);
+            return Ok(Self::System {
+                cache: DnsCache::new(),
+            });
         }
 
         // otherwise, use the specified resolvers
@@ -211,6 +247,7 @@ impl DnsResolver {
         Ok(Self::TrustDns {
             resolver: Box::new(mk_resolver(cfg, ResolverOpts::default(), proxy, so_mark)),
             prefer_ipv6,
+            cache: DnsCache::new(),
         })
     }
 }
@@ -265,7 +302,7 @@ impl RuntimeProvider for TokioRuntimeProviderWithSoMark {
                     server_addr.port(),
                     so_mark,
                     timeout.unwrap_or(Duration::from_secs(10)),
-                    &DnsResolver::System, // not going to be used as host is directly an ip address
+                    &DnsResolver::System { cache: DnsCache::new() }, // not going to be used as host is directly an ip address
                 )
                 .map_err(std::io::Error::other)
                 .map(|s| s.map(AsyncIoTokioAsStd))
@@ -276,7 +313,7 @@ impl RuntimeProvider for TokioRuntimeProviderWithSoMark {
                     server_addr.port(),
                     so_mark,
                     timeout.unwrap_or(Duration::from_secs(10)),
-                    &DnsResolver::System, // not going to be used as host is directly an ip address
+                    &DnsResolver::System { cache: DnsCache::new() }, // not going to be used as host is directly an ip address
                 )
                 .map_err(std::io::Error::other)
                 .map(|s| s.map(AsyncIoTokioAsStd))
