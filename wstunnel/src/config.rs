@@ -219,6 +219,18 @@ pub struct Client {
     #[cfg_attr(feature = "clap", arg(long, value_name = "FILE_PATH", verbatim_doc_comment))]
     pub tls_private_key: Option<PathBuf>,
 
+    /// Traffic shaping profile to mimic specific applications for DPI/ML evasion
+    /// Built-in profiles: chrome-browsing, webrtc-video, discord-voice
+    /// Or path to custom PCAP file (requires build with --features pcap-learning)
+    /// Note: Profiles affect buffer management and future timing optimizations
+    ///       Does NOT break SSH/interactive protocols (delays only for bulk transfers)
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        value_name = "PROFILE_NAME|PCAP_FILE",
+        verbatim_doc_comment
+    ))]
+    pub traffic_profile: Option<String>,
+
     /// Dns resolver to use to lookup ips of domain name. Can be specified multiple time
     /// Example:
     ///  dns://1.1.1.1 for using udp

@@ -1,6 +1,7 @@
 use crate::protocols::dns::DnsResolver;
 use crate::somark::SoMark;
 use crate::tunnel::transport::TransportAddr;
+use crate::tunnel::transport::pcap_learning::TrafficProfile;
 use hyper::header::{HeaderName, HeaderValue};
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -26,6 +27,7 @@ pub struct WsClientConfig {
     pub websocket_mask_frame: bool,
     pub http_proxy: Option<Url>,
     pub dns_resolver: DnsResolver,
+    pub traffic_profile: Option<Arc<TrafficProfile>>,
 }
 
 impl WsClientConfig {

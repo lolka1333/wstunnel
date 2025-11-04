@@ -2,9 +2,12 @@
 /// 
 /// This module implements realistic packet size patterns that mimic legitimate browser traffic
 /// to avoid statistical anomalies that can be detected by advanced DPI systems.
+///
+/// Can use PCAP-based learning for maximum accuracy when built with --features pcap-learning
 
 use bytes::{BufMut, BytesMut};
 use std::sync::atomic::{AtomicU64, Ordering};
+use super::pcap_learning::TrafficProfile;
 
 /// Maximum safe size for a single TLS record (16KB - overhead)
 const TLS_MAX_RECORD_SIZE: usize = 16 * 1024 - 256;
@@ -50,6 +53,31 @@ pub enum PacketSizeStrategy {
     MtuAware,
     /// Mix of both strategies for realistic variation
     Adaptive,
+    /// Use PCAP-learned profile (requires traffic profile to be loaded)
+    Learned,
+}
+
+/// Get packet size from a learned traffic profile
+/// Returns realistic size based on the profile's distribution
+pub fn get_packet_size_from_profile(
+    requested_len: usize,
+    profile: &TrafficProfile,
+) -> usize {
+    if requested_len >= TLS_MAX_RECORD_SIZE {
+        return requested_len; // Don't modify very large packets
+    }
+    
+    // Select size from profile's distribution
+    let state = SIZE_SELECTOR_STATE.fetch_add(1, Ordering::Relaxed);
+    let target_size = profile.select_packet_size(state);
+    
+    // Ensure target size fits the data
+    if target_size >= requested_len {
+        target_size
+    } else {
+        // If profile size too small, use closest browser-typical size
+        find_closest_browser_size(requested_len)
+    }
 }
 
 /// Returns a realistic packet size based on the requested length and strategy
@@ -95,6 +123,13 @@ pub fn get_realistic_packet_size(requested_len: usize, strategy: PacketSizeStrat
                 // 67% use browser-typical sizing, or all large packets
                 find_closest_browser_size(requested_len)
             }
+        }
+        PacketSizeStrategy::Learned => {
+            // Use learned profile from PCAP analysis
+            // Note: This requires a TrafficProfile to be loaded
+            // For now, fallback to BrowserTypical if profile not available
+            // Full implementation would pass profile as parameter
+            find_closest_browser_size(requested_len)
         }
     }
 }

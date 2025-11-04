@@ -22,6 +22,9 @@ use crate::tunnel::listeners::{
 };
 use crate::tunnel::server::{TlsServerConfig, WsServer, WsServerConfig};
 use crate::tunnel::transport::{TransportAddr, TransportScheme};
+use crate::tunnel::transport::pcap_learning::get_builtin_profile;
+#[cfg(feature = "pcap-learning")]
+use crate::tunnel::transport::pcap_learning::learn_from_pcap;
 use crate::tunnel::{RemoteAddr, to_host_port};
 use anyhow::{Context, anyhow};
 use futures_util::future::BoxFuture;
@@ -35,7 +38,7 @@ use std::time::Duration;
 use tokio::select;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use url::Url;
 
 pub async fn run_client(args: Client, executor: impl TokioExecutor) -> anyhow::Result<()> {
@@ -143,6 +146,45 @@ pub async fn create_client(
         panic!("http headers file does not exists: {}", path.display());
     }
 
+    // ✅ Load traffic profile for realistic traffic patterns
+    let traffic_profile = if let Some(profile_name) = &args.traffic_profile {
+        // Try built-in profiles first
+        if let Some(profile) = get_builtin_profile(profile_name) {
+            info!("Using built-in traffic profile: {}", profile.name);
+            Some(Arc::new(profile))
+        } else {
+            // Try loading from PCAP file
+            #[cfg(feature = "pcap-learning")]
+            {
+                let path = std::path::Path::new(profile_name);
+                if path.exists() {
+                    match learn_from_pcap(path) {
+                        Ok(profile) => {
+                            info!("Loaded traffic profile from PCAP: {} ({} packet samples)", 
+                                profile.name, 
+                                profile.packet_size_distribution.len());
+                            Some(Arc::new(profile))
+                        }
+                        Err(e) => {
+                            warn!("Failed to load PCAP file {}: {:?}. Using defaults.", profile_name, e);
+                            None
+                        }
+                    }
+                } else {
+                    warn!("Traffic profile '{}' not found (not a built-in profile and file doesn't exist). Using defaults.", profile_name);
+                    None
+                }
+            }
+            #[cfg(not(feature = "pcap-learning"))]
+            {
+                warn!("PCAP file '{}' specified but wstunnel was built without --features pcap-learning. Using defaults.", profile_name);
+                None
+            }
+        }
+    } else {
+        None  // Use defaults
+    };
+
     let client_config = WsClientConfig {
         remote_addr: TransportAddr::new(
             TransportScheme::from_str(args.remote_addr.scheme()).unwrap(),
@@ -165,6 +207,7 @@ pub async fn create_client(
         websocket_mask_frame: args.websocket_mask_frame,
         dns_resolver,
         http_proxy,
+        traffic_profile,
     };
 
     let client = WsClient::new(
