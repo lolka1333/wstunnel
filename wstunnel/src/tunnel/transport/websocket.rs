@@ -450,10 +450,42 @@ pub async fn connect(
         )
     })?;
     debug!("with HTTP upgrade request {req:?}");
+    
+    // ✅ Connection Timing: Realistic delay before sending HTTP upgrade request
+    // Browsers don't send upgrade immediately after TLS handshake completes
+    // Chrome typically has 3-8ms delay due to:
+    // - Event loop scheduling
+    // - JavaScript execution
+    // - Fetch API processing
+    // This helps avoid "too perfect" timing patterns that ML-DPI can detect
+    {
+        use std::time::Duration;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or(Duration::from_secs(0));
+        let jitter_ms = 3 + ((now.as_nanos() % 6) as u64); // 3-8ms
+        tokio::time::sleep(Duration::from_millis(jitter_ms)).await;
+    }
+    
     let transport = pooled_cnx.deref_mut().take().unwrap();
     let (ws, response) = fastwebsockets::handshake::client(&TokioExecutor::new(), req, transport)
         .await
         .with_context(|| format!("failed to do websocket handshake with the server {:?}", client_cfg.remote_addr))?;
+
+    // ✅ Connection Timing: Realistic delay after receiving upgrade response
+    // Browsers process the upgrade response before starting to use WebSocket
+    // Chrome typically has 2-5ms delay due to:
+    // - Response header parsing
+    // - WebSocket object initialization
+    // - Event handlers setup
+    {
+        use std::time::Duration;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or(Duration::from_secs(0));
+        let jitter_ms = 2 + ((now.as_nanos() % 4) as u64); // 2-5ms
+        tokio::time::sleep(Duration::from_millis(jitter_ms)).await;
+    }
 
     let (ws_rx, ws_tx) = mk_websocket_tunnel(ws, Role::Client, should_mask)?;
     Ok((ws_rx, ws_tx, response.into_parts().0))
