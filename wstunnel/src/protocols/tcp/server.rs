@@ -62,9 +62,9 @@ pub fn configure_socket(socket: SockRef, so_mark: SoMark) -> Result<(), anyhow::
             
             // Try BBR first (Linux 4.9+), fallback to Cubic
             // Both algorithms use initcwnd=10 (RFC 6928) which matches Chrome
-            let congestion_algs = [b"bbr\0", b"cubic\0"];
+            let congestion_algs: &[&[u8]] = &[b"bbr\0", b"cubic\0"];
             
-            for alg in &congestion_algs {
+            for alg in congestion_algs {
                 let result = nix::libc::setsockopt(
                     fd,
                     nix::libc::IPPROTO_TCP,
