@@ -1,5 +1,6 @@
 use super::cookies::generate_realistic_cookies;
 use super::io::{MAX_PACKET_LENGTH, TunnelRead, TunnelWrite};
+use super::path_variation::generate_realistic_path;
 use crate::tunnel::RemoteAddr;
 use crate::tunnel::client::WsClient;
 use crate::tunnel::transport::jwt::tunnel_to_jwt_token;
@@ -175,15 +176,19 @@ pub async fn connect(
     // If needed in future, could use h2::client::SendRequest::send_request_with_priority()
     // But this requires rewriting the entire HTTP/2 layer to use h2 directly
     
+    // ✅ Path Variation: Generate realistic URL paths for HTTP/2
+    // Same as WebSocket - diverse patterns prevent static URL fingerprinting
+    let uri_path = generate_realistic_path(&client.config.http_upgrade_path_prefix, true);
+    
     let mut req = Request::builder()
         .method("POST")
         .uri(format!(
-            "{}://{}/{}/events",
+            "{}://{}{}",
             client.config.remote_addr.scheme(),
             authority
                 .as_deref()
                 .unwrap_or_else(|| client.config.http_header_host.to_str().unwrap_or("")),
-            &client.config.http_upgrade_path_prefix
+            uri_path
         ))
         // ✅ Cookie Evolution: Use realistic cookies instead of just session token
         // Browsers accumulate analytics and tracking cookies that DPI systems expect to see

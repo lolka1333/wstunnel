@@ -1,6 +1,7 @@
 use super::cookies::generate_realistic_cookies;
 use super::io::{MAX_PACKET_LENGTH, TunnelRead, TunnelWrite};
 use super::packet_shaping::{calculate_realistic_buffer_growth};
+use super::path_variation::generate_realistic_path;
 use crate::tunnel::RemoteAddr;
 use crate::tunnel::client::WsClient;
 use crate::tunnel::client::l4_transport_stream::{TransportReadHalf, TransportStream, TransportWriteHalf};
@@ -281,11 +282,11 @@ pub async fn connect(
     
     // Build URI with realistic path structure (helps ML-based DPI see normal API patterns)
     // Real web apps often use paths like /api/v1/events or /ws/stream
-    let uri_path = if client_cfg.http_upgrade_path_prefix == "v1" {
-        format!("/api/v1/events") // More realistic API path
-    } else {
-        format!("/{}/events", &client_cfg.http_upgrade_path_prefix)
-    };
+    // ✅ Path Variation: Generate realistic URL paths that vary between connections
+    // Real web applications use diverse URL patterns, not always the same path
+    // This helps avoid URL-based fingerprinting and static pattern detection
+    // Query parameters add natural variation (session IDs, timestamps, etc.)
+    let uri_path = generate_realistic_path(&client_cfg.http_upgrade_path_prefix, true);
     
     let mut req = Request::builder()
         .method("GET")
