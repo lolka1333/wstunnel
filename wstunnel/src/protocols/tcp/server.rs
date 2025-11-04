@@ -39,6 +39,56 @@ pub fn configure_socket(socket: SockRef, so_mark: SoMark) -> Result<(), anyhow::
         debug!("Cannot set TCP recv buffer size: {:?}", e);
     }
 
+    // ✅ TCP Congestion Control and initcwnd - Chrome/modern browsers behavior
+    //
+    // Chrome uses initcwnd=10 segments (RFC 6928 standard) which is the default
+    // on modern Linux (3.0+), Windows 10+, and macOS 10.10+
+    //
+    // Note: initcwnd is a system-wide setting and cannot be set per-socket:
+    // - Linux: sysctl net.ipv4.tcp_init_cwnd (default=10 since kernel 3.0)
+    // - Windows: Registry HKLM\System\CurrentControlSet\Services\Tcpip\Parameters\TcpInitialCongestionWindow
+    // - macOS: kern.ipc.tcp_init_cwnd
+    //
+    // What we CAN do: Ensure TCP congestion control algorithm matches browser behavior
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        
+        // Set TCP congestion control to match modern browsers
+        // Chrome/Firefox use the system default (usually Cubic or BBR on modern kernels)
+        // BBR (Bottleneck Bandwidth and RTT) is preferred for better performance
+        unsafe {
+            let fd = socket.as_raw_fd();
+            
+            // Try BBR first (Linux 4.9+), fallback to Cubic
+            // Both algorithms use initcwnd=10 (RFC 6928) which matches Chrome
+            let congestion_algs = [b"bbr\0", b"cubic\0"];
+            
+            for alg in &congestion_algs {
+                let result = nix::libc::setsockopt(
+                    fd,
+                    nix::libc::IPPROTO_TCP,
+                    nix::libc::TCP_CONGESTION,
+                    alg.as_ptr() as *const nix::libc::c_void,
+                    (alg.len() - 1) as nix::libc::socklen_t, // -1 to exclude null terminator
+                );
+                
+                if result == 0 {
+                    debug!("TCP congestion control set to: {}", 
+                        std::str::from_utf8(&alg[..alg.len()-1]).unwrap_or("unknown"));
+                    break;
+                } else {
+                    debug!("Failed to set TCP congestion to {}: {:?}", 
+                        std::str::from_utf8(&alg[..alg.len()-1]).unwrap_or("unknown"),
+                        std::io::Error::last_os_error());
+                }
+            }
+        }
+    }
+    
+    // On Windows and macOS, TCP congestion control is managed by the OS
+    // Modern versions already use appropriate algorithms with initcwnd=10
+
     #[cfg(not(any(target_os = "windows", target_os = "openbsd")))]
     let tcp_keepalive = TcpKeepalive::new()
         .with_time(Duration::from_secs(60))
