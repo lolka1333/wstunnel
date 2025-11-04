@@ -1,6 +1,5 @@
 use super::cookies::generate_realistic_cookies;
 use super::io::{MAX_PACKET_LENGTH, TunnelRead, TunnelWrite};
-use super::path_variation::generate_realistic_path;
 use crate::tunnel::RemoteAddr;
 use crate::tunnel::client::WsClient;
 use crate::tunnel::transport::jwt::tunnel_to_jwt_token;
@@ -176,9 +175,9 @@ pub async fn connect(
     // If needed in future, could use h2::client::SendRequest::send_request_with_priority()
     // But this requires rewriting the entire HTTP/2 layer to use h2 directly
     
-    // ✅ Path Variation: Generate realistic URL paths for HTTP/2
-    // Same as WebSocket - diverse patterns prevent static URL fingerprinting
-    let uri_path = generate_realistic_path(&client.config.http_upgrade_path_prefix, true);
+    // Build URI with simple path structure using prefix + /events suffix
+    // Server requires path to end with "events" for validation
+    let uri_path = format!("/{}/events", client.config.http_upgrade_path_prefix);
     
     let mut req = Request::builder()
         .method("POST")

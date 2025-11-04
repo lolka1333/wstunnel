@@ -11,7 +11,6 @@ pub mod http2;
 pub mod io;
 mod jwt;
 pub mod packet_shaping;
-pub mod path_variation;
 pub mod pcap_learning;
 mod types;
 pub mod websocket;
