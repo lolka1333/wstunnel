@@ -1,4 +1,5 @@
 use super::io::{MAX_PACKET_LENGTH, TunnelRead, TunnelWrite};
+use super::packet_shaping::{PacketSizeStrategy, add_realistic_padding, calculate_realistic_buffer_growth, get_realistic_packet_size};
 use crate::tunnel::RemoteAddr;
 use crate::tunnel::client::WsClient;
 use crate::tunnel::client::l4_transport_stream::{TransportReadHalf, TransportStream, TransportWriteHalf};
@@ -11,7 +12,7 @@ use fastwebsockets::{CloseCode, Frame, OpCode, Payload, Role, WebSocket, WebSock
 use http_body_util::Empty;
 use hyper::Request;
 use hyper::header::{AUTHORIZATION, SEC_WEBSOCKET_PROTOCOL, SEC_WEBSOCKET_VERSION, UPGRADE};
-use hyper::header::{CONNECTION, HOST, SEC_WEBSOCKET_KEY, ORIGIN, SEC_WEBSOCKET_EXTENSIONS};
+use hyper::header::{CONNECTION, HOST, SEC_WEBSOCKET_KEY};
 use hyper::http::response::Parts;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioExecutor;
@@ -49,7 +50,7 @@ impl WebsocketTunnelWrite {
         // We start with MAX_PACKET_LENGTH to satisfy the assertion, but the buffer growth
         // pattern (in the write() method) is optimized for realistic TCP packet sizes to avoid
         // DPI detection based on statistical anomalies.
-        let mut buf = BytesMut::with_capacity(MAX_PACKET_LENGTH);
+        let buf = BytesMut::with_capacity(MAX_PACKET_LENGTH);
         
         Self {
             inner: ws,
@@ -70,13 +71,24 @@ impl TunnelWrite for WebsocketTunnelWrite {
         let read_len = self.buf.len();
         let buf = &mut self.buf;
 
-        // For better DPI evasion, ensure we don't always send maximum size frames
-        // Browsers typically send WebSocket frames in variable sizes, not always maximum
-        // The frame size will be naturally limited by read_len, which varies based on input
+        // For better DPI evasion, use realistic packet sizes that mimic browser behavior
+        // This includes MTU-aware sizing, avoiding round numbers, and adding realistic padding
         
+        // Calculate realistic target size based on actual data length
+        // Use Adaptive strategy for natural mix of MTU-aware and browser-typical sizes
+        let target_size = get_realistic_packet_size(read_len, PacketSizeStrategy::Adaptive);
+        
+        // Add realistic padding if needed (mimics HTTP headers, JSON structure)
+        // This makes statistical analysis harder as packets look like legitimate web traffic
+        if target_size > read_len && target_size - read_len < 512 {
+            // Only add padding for reasonable amounts (< 512 bytes overhead is realistic)
+            add_realistic_padding(buf, target_size);
+        }
+        
+        let actual_len = buf.len();
         let ret = self
             .inner
-            .write_frame(Frame::binary(Payload::BorrowedMut(&mut buf[..read_len])))
+            .write_frame(Frame::binary(Payload::BorrowedMut(&mut buf[..actual_len])))
             .await;
 
         if let Err(err) = ret {
@@ -90,32 +102,28 @@ impl TunnelWrite for WebsocketTunnelWrite {
             return Err(io::Error::new(ErrorKind::ConnectionAborted, err));
         }
 
-        // If the buffer has been completely filled with previous read, Grows it !
+        // If the buffer has been completely filled with previous read, grow it!
         // For the buffer to not be a bottleneck when the TCP window scale.
-        // We clamp it to 32Mb to avoid unbounded growth and as websocket max frame size is 64Mb by default
+        // We clamp it to 32MB to avoid unbounded growth and as websocket max frame size is 64MB by default
         // For udp, the buffer will never grow.
-        // Growth pattern is optimized to reduce TCP statistical anomalies (avoid suspicious burst patterns)
+        // Growth pattern mimics browser behavior to avoid statistical anomalies
         const _32_MB: usize = 32 * 1024 * 1024;
         buf.clear();
-        if buf.capacity() == read_len && buf.capacity() < _32_MB {
-            // Use more conservative growth to avoid suspicious patterns
-            // Start growing more gradually, then accelerate
-            let growth_factor = if buf.capacity() < 64 * 1024 {
-                2 // Double for small buffers
-            } else if buf.capacity() < 512 * 1024 {
-                5 // Grow by 20% for medium buffers
-            } else {
-                4 // Grow by 25% for large buffers (original behavior)
-            };
-            let new_size = buf.capacity() + (buf.capacity() / growth_factor);
-            buf.reserve(new_size);
-            trace!(
-                "Buffer {} Mb {} {} {}",
-                buf.capacity() as f64 / 1024.0 / 1024.0,
-                new_size,
-                buf.len(),
-                buf.capacity()
-            )
+        if buf.capacity() == actual_len && buf.capacity() < _32_MB {
+            // Use realistic browser-like buffer growth pattern
+            // This includes slight variations and alignment to typical browser buffer sizes
+            let new_capacity = calculate_realistic_buffer_growth(buf.capacity(), actual_len);
+            let growth_needed = new_capacity.saturating_sub(buf.capacity());
+            
+            if growth_needed > 0 && new_capacity <= _32_MB {
+                buf.reserve(growth_needed);
+                trace!(
+                    "Buffer grown to {} MB (was {} MB, grew by {} KB) - mimics browser pattern",
+                    buf.capacity() as f64 / 1024.0 / 1024.0,
+                    (buf.capacity() - growth_needed) as f64 / 1024.0 / 1024.0,
+                    growth_needed / 1024
+                );
+            }
         }
 
         Ok(())
