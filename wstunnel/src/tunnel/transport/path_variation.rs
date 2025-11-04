@@ -11,20 +11,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 static PATH_SELECTOR_STATE: AtomicU64 = AtomicU64::new(0x9876543210ABCDEF);
 
 /// Realistic API path patterns observed in modern web applications
+/// NOTE: All paths must end with "/events" for wstunnel server compatibility
+/// Server validates that path ends with "events" in extract_path_prefix()
 const API_PATH_PATTERNS: &[&str] = &[
     "/api/v1/events",
-    "/api/v1/ws",
-    "/api/v1/stream",
-    "/api/v2/realtime",
-    "/api/v2/notifications",
+    "/api/v1/ws/events",
+    "/api/v1/stream/events",
+    "/api/v2/realtime/events",
+    "/api/v2/notifications/events",
     "/v1/events",
-    "/v1/stream",
-    "/v2/updates",
-    "/socket/connect",
-    "/stream/live",
-    "/updates/realtime",
-    "/graphql",
-    "/ws/connect",
+    "/v1/stream/events",
+    "/v2/updates/events",
+    "/socket/connect/events",
+    "/stream/live/events",
+    "/updates/realtime/events",
+    "/graphql/events",
+    "/ws/connect/events",
     "/realtime/events",
 ];
 
