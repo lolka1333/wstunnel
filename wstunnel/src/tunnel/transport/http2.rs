@@ -1,3 +1,4 @@
+use super::cookies::generate_realistic_cookies;
 use super::io::{MAX_PACKET_LENGTH, TunnelRead, TunnelWrite};
 use crate::tunnel::RemoteAddr;
 use crate::tunnel::client::WsClient;
@@ -154,6 +155,26 @@ pub async fn connect(
 
     let jwt_token = tunnel_to_jwt_token(request_id, dest_addr);
     
+    // ⚠️ HTTP/2 Stream Priority (PRIORITY frame):
+    //
+    // Chrome uses a complex priority tree for HTTP/2 streams:
+    // - Stream 0 (connection): root of priority tree
+    // - CSS/JS: high weight (256)
+    // - Images: medium weight (128)
+    // - Async requests: low weight (64)
+    //
+    // LIMITATION: hyper/h2 doesn't expose API for setting stream priority/weight
+    // To implement Chrome-exact priority would require:
+    // 1. Using h2 crate directly (instead of hyper)
+    // 2. Manually constructing PRIORITY frames
+    // 3. Managing stream dependency tree
+    //
+    // For wstunnel use case (single long-lived POST stream), priority tree is less critical
+    // since we only have ONE stream, not multiple parallel streams like a browser
+    //
+    // If needed in future, could use h2::client::SendRequest::send_request_with_priority()
+    // But this requires rewriting the entire HTTP/2 layer to use h2 directly
+    
     let mut req = Request::builder()
         .method("POST")
         .uri(format!(
@@ -164,7 +185,9 @@ pub async fn connect(
                 .unwrap_or_else(|| client.config.http_header_host.to_str().unwrap_or("")),
             &client.config.http_upgrade_path_prefix
         ))
-        .header(COOKIE, format!("session={}", jwt_token))
+        // ✅ Cookie Evolution: Use realistic cookies instead of just session token
+        // Browsers accumulate analytics and tracking cookies that DPI systems expect to see
+        .header(COOKIE, generate_realistic_cookies(&jwt_token))
         .header(CONTENT_TYPE, "application/json")
         .version(hyper::Version::HTTP_2);
 
@@ -216,18 +239,48 @@ pub async fn connect(
         )
     })?;
     debug!("with HTTP upgrade request {req:?}");
+    
+    // ✅ Connection Timing: Realistic delay before HTTP/2 connection (like WebSocket)
+    // Browsers have natural processing delays between TLS handshake and HTTP/2 setup
+    {
+        use std::time::Duration;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or(Duration::from_secs(0));
+        let jitter_ms = 3 + ((now.as_nanos() % 6) as u64); // 3-8ms
+        tokio::time::sleep(Duration::from_millis(jitter_ms)).await;
+    }
+    
     let transport = pooled_cnx.deref_mut().take().unwrap();
-    // Configure HTTP/2 with Chrome-like settings for better DPI evasion
-    // Chrome uses adaptive window sizing and specific keep-alive settings
+    
+    // ✅ Configure HTTP/2 with Chrome 120+ SETTINGS frame values
+    // Chrome sends specific HTTP/2 SETTINGS during connection preface
+    // These values are fingerprinted by advanced DPI systems
+    //
+    // Chrome 120+ SETTINGS frame:
+    // HEADER_TABLE_SIZE (1): 65536 (default, but explicitly set in Chrome)
+    // ENABLE_PUSH (2): 0 (Chrome disables server push)
+    // MAX_CONCURRENT_STREAMS (3): 1000 (Chrome default for client)
+    // INITIAL_WINDOW_SIZE (4): 6291456 (6MB - Chrome default)
+    // MAX_FRAME_SIZE (5): 16384 (16KB - Chrome default)
+    // MAX_HEADER_LIST_SIZE (6): 262144 (256KB - Chrome default)
+    //
     let (mut request_sender, cnx) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
         .timer(TokioTimer::new())
-        .adaptive_window(true) // Chrome uses adaptive window sizing
-        .initial_connection_window_size(Some(10 * 1024 * 1024)) // 10MB - Chrome default
-        .initial_stream_window_size(Some(6 * 1024 * 1024)) // 6MB - Chrome default
-        .max_frame_size(Some(16384)) // 16KB - Chrome default max frame size
+        // ✅ Chrome HTTP/2 SETTINGS (exact values from Chrome 120+)
+        .adaptive_window(true)                                    // Chrome uses adaptive window
+        .initial_connection_window_size(Some(10 * 1024 * 1024)) // 10MB connection window
+        .initial_stream_window_size(Some(6 * 1024 * 1024))      // 6MB stream window (Chrome INITIAL_WINDOW_SIZE)
+        .max_frame_size(Some(16384))                             // 16KB max frame (Chrome MAX_FRAME_SIZE)
+        .max_concurrent_streams(Some(1000))                      // Chrome MAX_CONCURRENT_STREAMS
+        .max_header_list_size(256 * 1024)                        // 256KB (Chrome MAX_HEADER_LIST_SIZE)
+        // Keep-alive settings
         .keep_alive_interval(client.config.websocket_ping_frequency)
         .keep_alive_timeout(Duration::from_secs(10))
-        .keep_alive_while_idle(false) // Chrome doesn't keep idle connections alive
+        .keep_alive_while_idle(false)                            // Chrome doesn't ping idle connections
+        // Note: HEADER_TABLE_SIZE and ENABLE_PUSH are managed by hyper internally
+        // hyper sets HEADER_TABLE_SIZE=4096 by default (we use default)
+        // hyper sets ENABLE_PUSH=0 automatically for clients (matches Chrome)
         .handshake(TokioIo::new(transport))
         .await
         .with_context(|| format!("failed to do http2 handshake with the server {:?}", client.config.remote_addr))?;
@@ -248,6 +301,18 @@ pub async fn connect(
             response.status(),
             String::from_utf8(response.into_body().collect().await?.to_bytes().to_vec()).unwrap_or_default()
         ));
+    }
+
+    // ✅ Connection Timing: Realistic delay after receiving HTTP/2 response
+    // Chrome processes response headers before starting data transfer
+    // Typical delay: 2-5ms (response parsing, stream initialization)
+    {
+        use std::time::Duration;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or(Duration::from_secs(0));
+        let jitter_ms = 2 + ((now.as_nanos() % 4) as u64); // 2-5ms
+        tokio::time::sleep(Duration::from_millis(jitter_ms)).await;
     }
 
     let (parts, body) = response.into_parts();

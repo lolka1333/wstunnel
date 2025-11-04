@@ -1,3 +1,4 @@
+use super::cookies::generate_realistic_cookies;
 use super::io::{MAX_PACKET_LENGTH, TunnelRead, TunnelWrite};
 use super::packet_shaping::{calculate_realistic_buffer_growth};
 use crate::tunnel::RemoteAddr;
@@ -341,16 +342,25 @@ pub async fn connect(
         let _ = headers.insert(SEC_WEBSOCKET_EXTENSIONS, HeaderValue::from_static("permessage-deflate; client_max_window_bits"));
     }
     
-    // Store JWT in Cookie (preferred) or fallback to Sec-WebSocket-Protocol
+    // ✅ Cookie Evolution: Generate realistic cookies that mimic browser behavior
+    // Real browsers accumulate cookies from analytics, tracking, and functional purposes
+    // This includes: session token, Google Analytics (_ga, _gid), optional tracking cookies
+    // Cookies evolve over time - _gid changes daily, optional cookies appear/disappear
     if !headers.contains_key(COOKIE) {
-        if let Ok(cookie_val) = HeaderValue::from_str(&format!("session={}", jwt_token)) {
+        let realistic_cookies = generate_realistic_cookies(&jwt_token);
+        if let Ok(cookie_val) = HeaderValue::from_str(&realistic_cookies) {
             headers.insert(COOKIE, cookie_val);
         } else {
-            // Fallback to Sec-WebSocket-Protocol if Cookie value is invalid
-            headers.insert(SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_str(&format!("chat, superchat, {}{}", JWT_HEADER_PREFIX, jwt_token)).unwrap());
+            // Fallback to simple session cookie if realistic cookies are invalid
+            if let Ok(cookie_val) = HeaderValue::from_str(&format!("session={}", jwt_token)) {
+                headers.insert(COOKIE, cookie_val);
+            } else {
+                // Last resort: use Sec-WebSocket-Protocol
+                headers.insert(SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_str(&format!("chat, superchat, {}{}", JWT_HEADER_PREFIX, jwt_token)).unwrap());
+            }
         }
     } else {
-        // If Cookie already exists, add JWT to Sec-WebSocket-Protocol with realistic subprotocols
+        // If Cookie already exists (user-defined), add JWT to Sec-WebSocket-Protocol
         headers.insert(SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_str(&format!("chat, superchat, {}{}", JWT_HEADER_PREFIX, jwt_token)).unwrap());
     }
     
