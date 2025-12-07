@@ -55,6 +55,16 @@ impl ManageConnection for WsConnection {
         };
 
         if self.remote_addr.tls().is_some() {
+            // Check if DPI bypass is enabled
+            if let Some(dpi_config) = &self.dpi_bypass_config {
+                if dpi_config.tcp_fragmentation {
+                    // Use DPI bypass with TCP fragmentation
+                    let tls_stream = tls::connect_with_dpi_bypass(self, tcp_stream, dpi_config).await?;
+                    return Ok(Some(TransportStream::from_client_tls_dpi(tls_stream, Bytes::default())));
+                }
+            }
+            
+            // Normal TLS connection
             let tls_stream = tls::connect(self, tcp_stream).await?;
             Ok(Some(TransportStream::from_client_tls(tls_stream, Bytes::default())))
         } else {

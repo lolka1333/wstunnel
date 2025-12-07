@@ -25,7 +25,7 @@
 use pcap_file::pcap::PcapReader;
 #[cfg(feature = "pcap-learning")]
 use std::fs::File;
-
+#[cfg(feature = "pcap-learning")]
 use std::path::Path;
 
 /// Traffic profile learned from PCAP analysis
@@ -403,8 +403,9 @@ mod tests {
 }
 
 #[cfg(not(feature = "pcap-learning"))]
+#[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{get_builtin_profile, TrafficProfile};
     
     #[test]
     fn test_builtin_profiles_without_pcap() {

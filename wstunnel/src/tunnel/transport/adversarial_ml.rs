@@ -44,6 +44,157 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use super::pcap_learning::TrafficProfile;
 
+// ===== Crypto-based Padding Generator =====
+// Uses ChaCha20-like PRNG for high-quality random padding that looks like encrypted data
+// This is critical for Russian DPI which analyzes entropy patterns
+
+/// ChaCha20-based pseudo-random padding generator
+/// Produces high-entropy bytes indistinguishable from encrypted traffic
+struct CryptoPaddingGenerator {
+    state: [u32; 16],
+    output_block: [u8; 64],
+    output_pos: usize,
+}
+
+impl CryptoPaddingGenerator {
+    /// Create new generator with seed
+    fn new(seed: u64) -> Self {
+        // Initialize ChaCha20-like state
+        // Constants from original ChaCha20
+        let mut state = [0u32; 16];
+        state[0] = 0x61707865; // "expa"
+        state[1] = 0x3320646e; // "nd 3"
+        state[2] = 0x79622d32; // "2-by"
+        state[3] = 0x6b206574; // "te k"
+        
+        // Key from seed (expand to 256 bits)
+        let key_parts = [
+            seed as u32,
+            (seed >> 32) as u32,
+            seed.wrapping_mul(0x9e3779b97f4a7c15) as u32,
+            (seed.wrapping_mul(0x9e3779b97f4a7c15) >> 32) as u32,
+            seed.wrapping_add(0xdeadbeef) as u32,
+            (seed.wrapping_add(0xdeadbeef) >> 32) as u32,
+            seed.wrapping_mul(0x517cc1b727220a95) as u32,
+            (seed.wrapping_mul(0x517cc1b727220a95) >> 32) as u32,
+        ];
+        
+        for (i, &k) in key_parts.iter().enumerate() {
+            state[4 + i] = k;
+        }
+        
+        // Counter and nonce
+        state[12] = 0;
+        state[13] = 0;
+        state[14] = (seed >> 16) as u32;
+        state[15] = (seed >> 48) as u32;
+        
+        let mut generator = Self {
+            state,
+            output_block: [0u8; 64],
+            output_pos: 64, // Force regeneration on first use
+        };
+        
+        generator.generate_block();
+        generator
+    }
+    
+    /// Quarter round - core ChaCha operation
+    #[inline(always)]
+    fn quarter_round(state: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize) {
+        state[a] = state[a].wrapping_add(state[b]);
+        state[d] ^= state[a];
+        state[d] = state[d].rotate_left(16);
+        
+        state[c] = state[c].wrapping_add(state[d]);
+        state[b] ^= state[c];
+        state[b] = state[b].rotate_left(12);
+        
+        state[a] = state[a].wrapping_add(state[b]);
+        state[d] ^= state[a];
+        state[d] = state[d].rotate_left(8);
+        
+        state[c] = state[c].wrapping_add(state[d]);
+        state[b] ^= state[c];
+        state[b] = state[b].rotate_left(7);
+    }
+    
+    /// Generate 64 bytes of random output
+    fn generate_block(&mut self) {
+        let mut working = self.state;
+        
+        // 20 rounds (10 double-rounds)
+        for _ in 0..10 {
+            // Column rounds
+            Self::quarter_round(&mut working, 0, 4, 8, 12);
+            Self::quarter_round(&mut working, 1, 5, 9, 13);
+            Self::quarter_round(&mut working, 2, 6, 10, 14);
+            Self::quarter_round(&mut working, 3, 7, 11, 15);
+            
+            // Diagonal rounds
+            Self::quarter_round(&mut working, 0, 5, 10, 15);
+            Self::quarter_round(&mut working, 1, 6, 11, 12);
+            Self::quarter_round(&mut working, 2, 7, 8, 13);
+            Self::quarter_round(&mut working, 3, 4, 9, 14);
+        }
+        
+        // Add original state
+        for (w, s) in working.iter_mut().zip(self.state.iter()) {
+            *w = w.wrapping_add(*s);
+        }
+        
+        // Convert to bytes
+        for (i, word) in working.iter().enumerate() {
+            let bytes = word.to_le_bytes();
+            self.output_block[i * 4..i * 4 + 4].copy_from_slice(&bytes);
+        }
+        
+        // Increment counter
+        self.state[12] = self.state[12].wrapping_add(1);
+        if self.state[12] == 0 {
+            self.state[13] = self.state[13].wrapping_add(1);
+        }
+        
+        self.output_pos = 0;
+    }
+    
+    /// Get next random byte
+    #[inline]
+    fn next_byte(&mut self) -> u8 {
+        if self.output_pos >= 64 {
+            self.generate_block();
+        }
+        let byte = self.output_block[self.output_pos];
+        self.output_pos += 1;
+        byte
+    }
+    
+    /// Fill buffer with random bytes
+    fn fill_bytes(&mut self, buf: &mut [u8]) {
+        for byte in buf.iter_mut() {
+            *byte = self.next_byte();
+        }
+    }
+}
+
+/// Generate cryptographically-strong random padding
+/// This padding looks indistinguishable from encrypted traffic
+pub fn generate_crypto_padding(size: usize, seed: u64) -> Vec<u8> {
+    let mut generator = CryptoPaddingGenerator::new(seed);
+    let mut padding = vec![0u8; size];
+    generator.fill_bytes(&mut padding);
+    padding
+}
+
+/// Fill BytesMut with crypto padding (avoids allocation)
+pub fn fill_crypto_padding(buf: &mut BytesMut, size: usize, seed: u64) {
+    let mut generator = CryptoPaddingGenerator::new(seed);
+    buf.reserve(size);
+    for _ in 0..size {
+        buf.put_u8(generator.next_byte());
+    }
+}
+
 /// Global state for adversarial perturbation (PRNG state)
 /// Using atomic for thread-safe pseudo-random generation without locks
 static ADVERSARIAL_STATE: AtomicU64 = AtomicU64::new(0xDEADBEEF_CAFEBABE);
@@ -250,6 +401,7 @@ pub fn should_inject_dummy_packet(
 /// Generate a dummy packet with realistic size
 ///
 /// Dummy packets should look like real traffic to avoid detection.
+/// Uses crypto-based random generation to match encrypted traffic entropy.
 pub fn generate_dummy_packet(traffic_profile: Option<&TrafficProfile>) -> BytesMut {
     let state = ADVERSARIAL_STATE.fetch_add(1, Ordering::Relaxed);
     
@@ -262,17 +414,10 @@ pub fn generate_dummy_packet(traffic_profile: Option<&TrafficProfile>) -> BytesM
         sizes[(state as usize) % sizes.len()]
     };
     
-    // Create buffer with realistic-looking data
+    // Create buffer with high-entropy data that matches encrypted traffic
+    // This is critical for Russian DPI which analyzes entropy patterns
     let mut buf = BytesMut::with_capacity(size);
-    
-    // Fill with pseudo-random data that looks like encrypted payload
-    // Don't use cryptographic RNG for performance
-    let mut current_state = state;
-    for _ in 0..size {
-        current_state = current_state.wrapping_mul(6364136223846793005)
-                                      .wrapping_add(1442695040888963407);
-        buf.put_u8((current_state >> 32) as u8);
-    }
+    fill_crypto_padding(&mut buf, size, state);
     
     buf
 }
@@ -321,11 +466,9 @@ fn apply_front_padding(buf: &mut BytesMut, _burst_total_size: usize) -> usize {
     
     let padding_needed = MTU_SIZE - current_size;
     
-    // Add padding (zeros are fine, encrypted tunnel makes it indistinguishable)
-    buf.reserve(padding_needed);
-    for _ in 0..padding_needed {
-        buf.put_u8(0);
-    }
+    // Use crypto-based padding for high entropy (defeats DPI entropy analysis)
+    let seed = ADVERSARIAL_STATE.fetch_add(1, Ordering::Relaxed);
+    fill_crypto_padding(buf, padding_needed, seed);
     
     padding_needed
 }
@@ -351,10 +494,9 @@ fn apply_total_padding(
     // For now, add small amount to each packet
     let padding_per_packet = 512; // Fixed amount per packet
     
-    buf.reserve(padding_per_packet);
-    for _ in 0..padding_per_packet {
-        buf.put_u8(0);
-    }
+    // Use crypto-based padding for high entropy (defeats DPI entropy analysis)
+    let seed = ADVERSARIAL_STATE.fetch_add(1, Ordering::Relaxed);
+    fill_crypto_padding(buf, padding_per_packet, seed);
     
     padding_per_packet
 }
@@ -383,10 +525,9 @@ fn apply_directional_padding(buf: &mut BytesMut) -> usize {
     let padding_needed = target_size.saturating_sub(current_size);
     
     if padding_needed > 0 {
-        buf.reserve(padding_needed);
-        for _ in 0..padding_needed {
-            buf.put_u8(0);
-        }
+        // Use crypto-based padding for high entropy (defeats DPI entropy analysis)
+        let seed = ADVERSARIAL_STATE.fetch_add(1, Ordering::Relaxed);
+        fill_crypto_padding(buf, padding_needed, seed);
     }
     
     padding_needed
@@ -426,14 +567,8 @@ fn apply_random_padding(buf: &mut BytesMut) -> usize {
     let padding_size = (state % 512) as usize;
     
     if padding_size > 0 {
-        buf.reserve(padding_size);
-        
-        // Use pseudo-random pattern (fast)
-        let mut rng = state;
-        for _ in 0..padding_size {
-            rng = rng.wrapping_mul(1103515245).wrapping_add(12345);
-            buf.put_u8((rng >> 24) as u8);
-        }
+        // Use crypto-based padding for high entropy (defeats DPI entropy analysis)
+        fill_crypto_padding(buf, padding_size, state);
     }
     
     padding_size

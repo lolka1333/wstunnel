@@ -24,6 +24,7 @@
 /// GREASE values defined in RFC 8701
 /// These are reserved values that MUST be ignored by servers
 /// Chrome inserts 2-3 GREASE values in various TLS fields
+#[allow(dead_code)]
 const GREASE_VALUES: &[u16] = &[
     0x0a0a, 0x1a1a, 0x2a2a, 0x3a3a,
     0x4a4a, 0x5a5a, 0x6a6a, 0x7a7a,
@@ -149,6 +150,7 @@ const GREASE_VALUES: &[u16] = &[
 /// Select a GREASE value pseudo-randomly
 /// Note: This is for documentation purposes
 /// rustls doesn't allow us to actually inject these values
+#[allow(dead_code)]
 pub fn select_grease_value(seed: u64) -> u16 {
     let index = (seed as usize) % GREASE_VALUES.len();
     GREASE_VALUES[index]

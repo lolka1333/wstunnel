@@ -280,3 +280,55 @@ pub async fn connect(client_cfg: &WsClientConfig, tcp_stream: TcpStream) -> anyh
 
     Ok(tls_stream)
 }
+
+/// Connect with DPI bypass - fragments TLS ClientHello to evade Russian DPI (TSPU)
+/// 
+/// This function wraps the TCP stream in a FragmentingTcpStream that splits
+/// the first ~600 bytes (TLS ClientHello) into small fragments.
+/// This prevents DPI from reading the SNI in a single packet.
+pub async fn connect_with_dpi_bypass(
+    client_cfg: &WsClientConfig, 
+    tcp_stream: TcpStream,
+    dpi_config: &crate::tunnel::transport::dpi_bypass::DpiBypassConfig,
+) -> anyhow::Result<TlsStream<crate::tunnel::transport::dpi_bypass::FragmentingTcpStream>> {
+    use crate::tunnel::transport::dpi_bypass::FragmentingTcpStream;
+    
+    let sni = client_cfg.tls_server_name();
+    let tls_config = match &client_cfg.remote_addr {
+        TransportAddr::Wss { tls, .. } => tls,
+        TransportAddr::Https { tls, .. } => tls,
+        TransportAddr::Http { .. } | TransportAddr::Ws { .. } => {
+            return Err(anyhow!("Transport does not support TLS: {}", client_cfg.remote_addr.scheme()));
+        }
+    };
+
+    info!(
+        "Doing TLS handshake with DPI bypass (fragment_size={}) SNI {sni:?} with server {}:{}",
+        dpi_config.fragment_size,
+        client_cfg.remote_addr.host(),
+        client_cfg.remote_addr.port()
+    );
+
+    // Set TCP_NODELAY to ensure each fragment is sent as separate TCP segment
+    let _ = tcp_stream.set_nodelay(true);
+    
+    // Wrap TCP stream with fragmenting layer
+    let fragment_config = dpi_config.to_fragment_config();
+    let fragmenting_stream = FragmentingTcpStream::new(tcp_stream, fragment_config);
+
+    // Add jitter before handshake
+    use std::time::Duration;
+    let jitter_ms = {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or(Duration::from_secs(0));
+        let nanos = now.as_nanos();
+        5 + ((nanos % 16) as u64)
+    };
+    tokio::time::sleep(Duration::from_millis(jitter_ms)).await;
+
+    let tls_connector = tls_config.tls_connector();
+    let tls_stream = tls_connector.connect(sni, fragmenting_stream).await?;
+
+    Ok(tls_stream)
+}

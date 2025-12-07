@@ -63,6 +63,7 @@ async fn client_ws(dns_resolver: DnsResolver) -> WsClient {
         http_proxy: None,
         traffic_profile: None,
         adversarial_config: None,
+        dpi_bypass_config: None,
     };
 
     WsClient::new(

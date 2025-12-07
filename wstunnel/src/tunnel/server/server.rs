@@ -16,7 +16,6 @@ use crate::tunnel::server::utils::{
 };
 use crate::tunnel::tls_reloader::TlsReloader;
 use crate::tunnel::{LocalProtocol, RemoteAddr, try_to_sock_addr};
-use ahash::AHasher;
 use anyhow::{Context, anyhow};
 use arc_swap::ArcSwap;
 use futures_util::FutureExt;
@@ -30,8 +29,7 @@ use parking_lot::Mutex;
 use socket2::SockRef;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
-use std::hash::{Hash, Hasher};
-use std::net::{Ipv6Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, LazyLock};
@@ -41,7 +39,7 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tracing::{Instrument, Level, Span, error, info, span, warn};
-use url::{Host, Url};
+use url::Url;
 
 #[derive(Debug)]
 pub struct TlsServerConfig {

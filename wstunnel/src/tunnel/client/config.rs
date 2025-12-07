@@ -2,6 +2,7 @@ use crate::protocols::dns::DnsResolver;
 use crate::somark::SoMark;
 use crate::tunnel::transport::TransportAddr;
 use crate::tunnel::transport::adversarial_ml::AdversarialConfig;
+use crate::tunnel::transport::dpi_bypass::DpiBypassConfig;
 use crate::tunnel::transport::pcap_learning::TrafficProfile;
 use hyper::header::{HeaderName, HeaderValue};
 use parking_lot::RwLock;
@@ -30,6 +31,8 @@ pub struct WsClientConfig {
     pub dns_resolver: DnsResolver,
     pub traffic_profile: Option<Arc<TrafficProfile>>,
     pub adversarial_config: Option<AdversarialConfig>,
+    /// DPI bypass configuration for Russian TSPU evasion
+    pub dpi_bypass_config: Option<DpiBypassConfig>,
 }
 
 impl WsClientConfig {

@@ -292,6 +292,42 @@ pub struct Client {
     ))]
     pub adversarial_dummy_packet_rate: f64,
 
+    /// Enable DPI bypass mode for Russian TSPU/РКНРФ evasion
+    /// Fragments TLS ClientHello to prevent SNI inspection
+    /// This is the most effective technique against Russian DPI
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        default_value = "false",
+        verbatim_doc_comment
+    ))]
+    pub dpi_bypass: bool,
+
+    /// DPI bypass fragment size in bytes (default: 40)
+    /// Smaller values are more effective but add overhead
+    /// Recommended: 40 for Russia, 2 for aggressive mode
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        value_name = "SIZE",
+        default_value = "40",
+        verbatim_doc_comment,
+        requires = "dpi_bypass"
+    ))]
+    pub dpi_bypass_fragment_size: usize,
+
+    /// DPI bypass preset configuration
+    /// Options: russia, aggressive, custom
+    /// - russia: Optimized for Russian TSPU (fragment_size=40)
+    /// - aggressive: Maximum evasion (fragment_size=2)
+    /// - custom: Use --dpi-bypass-fragment-size value
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        value_name = "PRESET",
+        default_value = "russia",
+        verbatim_doc_comment,
+        requires = "dpi_bypass"
+    ))]
+    pub dpi_bypass_preset: String,
+
     /// Dns resolver to use to lookup ips of domain name. Can be specified multiple time
     /// Example:
     ///  dns://1.1.1.1 for using udp

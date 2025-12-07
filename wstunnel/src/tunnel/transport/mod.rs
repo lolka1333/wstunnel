@@ -8,11 +8,15 @@ use tracing::error;
 
 pub mod adversarial_ml;
 pub mod cookies;
+pub mod dpi_bypass;
 pub mod http2;
 pub mod io;
 mod jwt;
 pub mod packet_shaping;
 pub mod pcap_learning;
+pub mod sni_fragmentation;
+pub mod tcp_fragmentation;
+pub mod tls_fingerprint;
 mod types;
 pub mod websocket;
 

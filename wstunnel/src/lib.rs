@@ -25,6 +25,7 @@ use crate::tunnel::transport::{TransportAddr, TransportScheme};
 use crate::tunnel::transport::pcap_learning::get_builtin_profile;
 #[cfg(feature = "pcap-learning")]
 use crate::tunnel::transport::pcap_learning::learn_from_pcap;
+use crate::tunnel::transport::dpi_bypass::DpiBypassConfig;
 use crate::tunnel::{RemoteAddr, to_host_port};
 use anyhow::{Context, anyhow};
 use futures_util::future::BoxFuture;
@@ -215,6 +216,28 @@ pub async fn create_client(
         None
     };
 
+    // DPI bypass configuration for Russian TSPU evasion
+    let dpi_bypass_config = if args.dpi_bypass {
+        info!("DPI bypass enabled with preset '{}' (fragment_size={})", 
+            args.dpi_bypass_preset, args.dpi_bypass_fragment_size);
+        
+        let config = match args.dpi_bypass_preset.as_str() {
+            "aggressive" => DpiBypassConfig::aggressive(),
+            "custom" => DpiBypassConfig {
+                tcp_fragmentation: true,
+                fragment_size: args.dpi_bypass_fragment_size,
+                inter_fragment_delay_us: 100,
+                sni_case_randomization: true,
+                adversarial_padding: true,
+                fragment_first_bytes: 600,
+            },
+            _ => DpiBypassConfig::russia(), // Default to russia preset
+        };
+        Some(config)
+    } else {
+        None
+    };
+
     let client_config = WsClientConfig {
         remote_addr: TransportAddr::new(
             TransportScheme::from_str(args.remote_addr.scheme()).unwrap(),
@@ -239,6 +262,7 @@ pub async fn create_client(
         http_proxy,
         traffic_profile,
         adversarial_config,
+        dpi_bypass_config,
     };
 
     let client = WsClient::new(

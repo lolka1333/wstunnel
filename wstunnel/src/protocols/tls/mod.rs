@@ -2,8 +2,8 @@ mod grease;
 mod server;
 mod utils;
 
-pub use grease::select_grease_value;
 pub use server::connect;
+pub use server::connect_with_dpi_bypass;
 pub use server::load_certificates_from_pem;
 pub use server::load_private_key_from_file;
 pub use server::tls_acceptor;
