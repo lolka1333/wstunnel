@@ -13,6 +13,7 @@ use std::io;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::task::{Context, Poll};
+use bytes::Bytes;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 
@@ -119,6 +120,25 @@ pub fn is_dpi_bypass_enabled() -> bool {
     DPI_BYPASS_ENABLED.load(Ordering::Relaxed)
 }
 
+/// State for pending fragmented write operation
+#[derive(Debug, Default)]
+enum FragmentWriteState {
+    /// No pending write
+    #[default]
+    Idle,
+    /// Writing fragments, storing remaining fragments and current fragment offset
+    Writing {
+        /// All fragments to write
+        fragments: Vec<Bytes>,
+        /// Current fragment index
+        current_idx: usize,
+        /// Bytes written in current fragment
+        current_offset: usize,
+        /// Total bytes from original buffer that these fragments represent
+        original_len: usize,
+    },
+}
+
 /// TCP stream wrapper that fragments the first bytes (TLS ClientHello)
 /// 
 /// This is critical for bypassing Russian DPI which inspects TLS ClientHello
@@ -127,6 +147,8 @@ pub struct FragmentingTcpStream {
     inner: TcpStream,
     config: TcpFragmentConfig,
     bytes_written: usize,
+    /// State for async fragmented writes
+    write_state: FragmentWriteState,
 }
 
 impl FragmentingTcpStream {
@@ -136,6 +158,7 @@ impl FragmentingTcpStream {
             inner: stream,
             config,
             bytes_written: 0,
+            write_state: FragmentWriteState::Idle,
         }
     }
     
@@ -178,68 +201,115 @@ impl AsyncRead for FragmentingTcpStream {
 
 impl AsyncWrite for FragmentingTcpStream {
     fn poll_write(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        // If we've already written enough bytes, pass through directly
-        if !self.should_fragment() {
-            return Pin::new(&mut self.inner).poll_write(cx, buf);
-        }
+        // Get mutable reference to self through Pin
+        let this = self.get_mut();
         
-        // Calculate how much of this write should be fragmented
-        let remaining_to_fragment = self.config.fragment_first_n_bytes
-            .saturating_sub(self.bytes_written);
-        let fragment_len = buf.len().min(remaining_to_fragment);
-        
-        if fragment_len == 0 {
-            // Nothing to fragment, write directly
-            return Pin::new(&mut self.inner).poll_write(cx, buf);
-        }
-        
-        // Fragment the data
-        let to_fragment = &buf[..fragment_len];
-        let fragmented = fragment_data(to_fragment, &self.config);
-        
-        // Write first fragment (or all if single fragment)
-        if fragmented.fragments.len() == 1 {
-            let result = Pin::new(&mut self.inner).poll_write(cx, &fragmented.fragments[0]);
-            if let Poll::Ready(Ok(n)) = &result {
-                self.as_mut().get_mut().bytes_written += n;
-            }
-            return result;
-        }
-        
-        // Multiple fragments - write them with flushes
-        // Note: In async context we can't easily add delays between fragments
-        // But the flush between fragments helps ensure separate TCP segments
-        let mut total_written = 0;
-        for fragment in &fragmented.fragments {
-            match Pin::new(&mut self.inner).poll_write(cx, fragment) {
-                Poll::Ready(Ok(n)) => {
-                    total_written += n;
-                    // Try to flush to ensure separate TCP segment
-                    let _ = Pin::new(&mut self.inner).poll_flush(cx);
-                }
-                Poll::Ready(Err(e)) => {
-                    if total_written > 0 {
-                        self.as_mut().get_mut().bytes_written += total_written;
-                        return Poll::Ready(Ok(total_written));
+        loop {
+            // Take the write state to avoid borrow conflicts
+            let state = std::mem::take(&mut this.write_state);
+            
+            match state {
+                FragmentWriteState::Idle => {
+                    // No pending write - check if we need to fragment
+                    if !this.should_fragment() {
+                        // Past fragmentation threshold, write directly
+                        let result = Pin::new(&mut this.inner).poll_write(cx, buf);
+                        if let Poll::Ready(Ok(n)) = &result {
+                            this.bytes_written += n;
+                        }
+                        return result;
                     }
-                    return Poll::Ready(Err(e));
-                }
-                Poll::Pending => {
-                    if total_written > 0 {
-                        self.as_mut().get_mut().bytes_written += total_written;
-                        return Poll::Ready(Ok(total_written));
+                    
+                    // Calculate how much of this write should be fragmented
+                    let remaining_to_fragment = this.config.fragment_first_n_bytes
+                        .saturating_sub(this.bytes_written);
+                    let fragment_len = buf.len().min(remaining_to_fragment);
+                    
+                    if fragment_len == 0 {
+                        // Nothing to fragment, write directly
+                        let result = Pin::new(&mut this.inner).poll_write(cx, buf);
+                        if let Poll::Ready(Ok(n)) = &result {
+                            this.bytes_written += n;
+                        }
+                        return result;
                     }
-                    return Poll::Pending;
+                    
+                    // Fragment the data
+                    let to_fragment = &buf[..fragment_len];
+                    let fragmented = fragment_data(to_fragment, &this.config);
+                    
+                    // Single fragment - just write it directly
+                    if fragmented.fragments.len() == 1 {
+                        let result = Pin::new(&mut this.inner).poll_write(cx, &fragmented.fragments[0]);
+                        if let Poll::Ready(Ok(n)) = &result {
+                            this.bytes_written += n;
+                        }
+                        return result;
+                    }
+                    
+                    // Multiple fragments - set up state machine and continue loop
+                    this.write_state = FragmentWriteState::Writing {
+                        fragments: fragmented.fragments,
+                        current_idx: 0,
+                        current_offset: 0,
+                        original_len: fragment_len,
+                    };
+                    // Continue loop to process Writing state
+                }
+                
+                FragmentWriteState::Writing { fragments, mut current_idx, mut current_offset, original_len } => {
+                    // Continue writing fragments
+                    while current_idx < fragments.len() {
+                        let fragment = &fragments[current_idx];
+                        let remaining = &fragment[current_offset..];
+                        
+                        if remaining.is_empty() {
+                            // Move to next fragment
+                            current_idx += 1;
+                            current_offset = 0;
+                            continue;
+                        }
+                        
+                        match Pin::new(&mut this.inner).poll_write(cx, remaining) {
+                            Poll::Ready(Ok(n)) => {
+                                current_offset += n;
+                                
+                                // If we finished this fragment, try to flush for TCP segment separation
+                                if current_offset >= fragment.len() {
+                                    let _ = Pin::new(&mut this.inner).poll_flush(cx);
+                                    current_idx += 1;
+                                    current_offset = 0;
+                                }
+                                // Continue loop to write more fragments
+                            }
+                            Poll::Ready(Err(e)) => {
+                                // Error - state already reset (Idle from take)
+                                return Poll::Ready(Err(e));
+                            }
+                            Poll::Pending => {
+                                // Socket not ready - save state and return Pending
+                                this.write_state = FragmentWriteState::Writing {
+                                    fragments,
+                                    current_idx,
+                                    current_offset,
+                                    original_len,
+                                };
+                                return Poll::Pending;
+                            }
+                        }
+                    }
+                    
+                    // All fragments written successfully
+                    this.bytes_written += original_len;
+                    // write_state already Idle from take
+                    return Poll::Ready(Ok(original_len));
                 }
             }
         }
-        
-        self.as_mut().get_mut().bytes_written += total_written;
-        Poll::Ready(Ok(buf.len()))
     }
     
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
