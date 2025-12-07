@@ -69,6 +69,14 @@ pub struct SniObfuscationConfig {
     /// Split position: where to split SNI in ClientHello
     /// None = auto-detect optimal position
     pub split_position: Option<usize>,
+    
+    /// Split SNI hostname at each dot (e.g., "www.example.com" → 3 parts)
+    /// Критично для обхода ТСПУ - разделяет домен так, что DPI не видит полный SNI
+    pub split_at_dots: bool,
+    
+    /// Split TLS Record Header from payload (5-byte header separate)
+    /// Эффективно против stateless DPI
+    pub split_tls_record_header: bool,
 }
 
 impl Default for SniObfuscationConfig {
@@ -82,6 +90,8 @@ impl Default for SniObfuscationConfig {
             decoy_domain: None,
             sni_padding: false,
             split_position: None,
+            split_at_dots: false,
+            split_tls_record_header: false,
         }
     }
 }
@@ -98,6 +108,8 @@ impl SniObfuscationConfig {
             decoy_domain: Some("www.google.com".to_string()),
             sni_padding: true,
             split_position: None,
+            split_at_dots: true,              // Разделение на точках - критично для ТСПУ
+            split_tls_record_header: true,    // Разделение TLS заголовка
         }
     }
     
@@ -112,6 +124,24 @@ impl SniObfuscationConfig {
             decoy_domain: Some("www.microsoft.com".to_string()),
             sni_padding: true,
             split_position: None,
+            split_at_dots: true,
+            split_tls_record_header: true,
+        }
+    }
+    
+    /// Minimal overhead mode - only essential techniques
+    pub fn minimal() -> Self {
+        Self {
+            tcp_fragmentation: true,
+            fragment_size: 40,
+            inter_fragment_delay_us: 50,
+            case_randomization: false,
+            use_decoy_sni: false,
+            decoy_domain: None,
+            sni_padding: false,
+            split_position: None,
+            split_at_dots: true,               // Самая эффективная техника
+            split_tls_record_header: true,     // Низкий overhead
         }
     }
 }
@@ -127,6 +157,10 @@ pub struct SniInfo {
     pub hostname: String,
     /// Optimal split position (just before SNI)
     pub optimal_split_position: usize,
+    /// Offset of hostname within the data
+    pub hostname_offset: usize,
+    /// Positions of dots in hostname (absolute offsets in data)
+    pub dot_positions: Vec<usize>,
 }
 
 /// Parse TLS ClientHello and find SNI extension
@@ -219,14 +253,25 @@ pub fn find_sni_in_client_hello(data: &[u8]) -> Option<SniInfo> {
                 return None;
             }
             
-            let hostname_bytes = &data[pos + 4 + 5..pos + 4 + 5 + name_length];
+            let hostname_offset = pos + 4 + 5;
+            let hostname_bytes = &data[hostname_offset..hostname_offset + name_length];
             let hostname = String::from_utf8_lossy(hostname_bytes).to_string();
+            
+            // Вычисляем позиции точек в hostname (абсолютные offset'ы в data)
+            let mut dot_positions = Vec::new();
+            for (i, ch) in hostname.char_indices() {
+                if ch == '.' {
+                    dot_positions.push(hostname_offset + i);
+                }
+            }
             
             return Some(SniInfo {
                 sni_offset,
                 sni_length: 4 + ext_len, // extension header + data
                 hostname,
                 optimal_split_position: sni_offset, // Split just before SNI extension
+                hostname_offset,
+                dot_positions,
             });
         }
         
@@ -235,6 +280,9 @@ pub fn find_sni_in_client_hello(data: &[u8]) -> Option<SniInfo> {
     
     None
 }
+
+/// TLS Record Header size (5 bytes)
+pub const TLS_RECORD_HEADER_SIZE: usize = 5;
 
 /// Calculate optimal positions to split ClientHello for SNI obfuscation
 ///
@@ -245,6 +293,17 @@ pub fn calculate_split_positions(
     config: &SniObfuscationConfig,
 ) -> Vec<usize> {
     let mut positions = Vec::new();
+    
+    // TLS Record Header split - разделение заголовка TLS от payload
+    // Критично для stateless DPI
+    if config.split_tls_record_header && data.len() > TLS_RECORD_HEADER_SIZE && data[0] == 0x16 {
+        // Split после Content Type (1 байт)
+        positions.push(1);
+        // Split перед последним байтом длины (4 байта)
+        positions.push(4);
+        // Split после TLS Record Header (5 байт)
+        positions.push(TLS_RECORD_HEADER_SIZE);
+    }
     
     // Find SNI in ClientHello
     let sni_info = match find_sni_in_client_hello(data) {
@@ -257,6 +316,8 @@ pub fn calculate_split_positions(
                 positions.push(pos);
                 pos += fragment_size;
             }
+            positions.sort();
+            positions.dedup();
             return positions;
         }
     };
@@ -282,16 +343,43 @@ pub fn calculate_split_positions(
             positions.push(sni_start);
         }
         
-        // Split inside SNI hostname (additional fragmentation)
-        // SNI structure: ext_type(2) + ext_len(2) + list_len(2) + type(1) + name_len(2) + hostname
-        let hostname_start = sni_start + 9; // offset to hostname
-        let hostname_len = sni_info.hostname.len();
-        
-        if hostname_len > 3 {
-            // Split hostname in the middle
-            let mid = hostname_start + hostname_len / 2;
-            if mid < sni_end && mid < data.len() {
-                positions.push(mid);
+        // NEW: Split at dots in hostname
+        // Разделение на точках - критично для ТСПУ
+        // "www.example.com" → split before and after each dot
+        if config.split_at_dots && !sni_info.dot_positions.is_empty() {
+            for &dot_pos in &sni_info.dot_positions {
+                // Split ПЕРЕД точкой
+                if dot_pos > 0 && dot_pos < data.len() {
+                    positions.push(dot_pos);
+                }
+                // Split ПОСЛЕ точки
+                if dot_pos + 1 < data.len() {
+                    positions.push(dot_pos + 1);
+                }
+            }
+            
+            // Также добавляем split в начале hostname
+            if sni_info.hostname_offset > 0 && sni_info.hostname_offset < data.len() {
+                positions.push(sni_info.hostname_offset);
+            }
+            
+            // И в конце hostname
+            let hostname_end = sni_info.hostname_offset + sni_info.hostname.len();
+            if hostname_end < data.len() {
+                positions.push(hostname_end);
+            }
+        } else {
+            // Legacy: Split inside SNI hostname in the middle
+            // SNI structure: ext_type(2) + ext_len(2) + list_len(2) + type(1) + name_len(2) + hostname
+            let hostname_start = sni_start + 9; // offset to hostname
+            let hostname_len = sni_info.hostname.len();
+            
+            if hostname_len > 3 {
+                // Split hostname in the middle
+                let mid = hostname_start + hostname_len / 2;
+                if mid < sni_end && mid < data.len() {
+                    positions.push(mid);
+                }
             }
         }
         
@@ -312,8 +400,8 @@ pub fn calculate_split_positions(
     positions.sort();
     positions.dedup();
     
-    // Remove positions that are too close together
-    let min_fragment = 1;
+    // Remove positions that are too close together (but allow single-byte splits for aggressive mode)
+    let min_fragment = if config.fragment_size <= 1 { 0 } else { 1 };
     let mut filtered = Vec::new();
     let mut last_pos = 0usize;
     
@@ -325,6 +413,38 @@ pub fn calculate_split_positions(
     }
     
     filtered
+}
+
+/// Calculate split positions optimized for dot-separated SNI
+/// Возвращает позиции для разделения hostname на каждой точке
+pub fn calculate_sni_dot_positions(data: &[u8]) -> Vec<usize> {
+    let sni_info = match find_sni_in_client_hello(data) {
+        Some(info) => info,
+        None => return vec![],
+    };
+    
+    let mut positions = Vec::new();
+    
+    // Add hostname start
+    if sni_info.hostname_offset > 0 {
+        positions.push(sni_info.hostname_offset);
+    }
+    
+    // Add dot positions (before and after each dot)
+    for &dot_pos in &sni_info.dot_positions {
+        positions.push(dot_pos);
+        positions.push(dot_pos + 1);
+    }
+    
+    // Add hostname end
+    let hostname_end = sni_info.hostname_offset + sni_info.hostname.len();
+    positions.push(hostname_end);
+    
+    positions.sort();
+    positions.dedup();
+    
+    // Filter valid positions
+    positions.into_iter().filter(|&p| p < data.len()).collect()
 }
 
 /// Fragment data at specified positions
@@ -650,5 +770,166 @@ mod tests {
         
         // Should have correct total length
         assert_eq!(padding.len(), 50); // 100 - 50 = 50 bytes of padding
+    }
+    
+    // ===== New tests for split_at_dots and TLS Record Header split =====
+    
+    // Sample TLS ClientHello with SNI "www.example.com" (15 bytes hostname)
+    fn sample_client_hello_with_dots() -> Vec<u8> {
+        vec![
+            // TLS Record Header (5 bytes)
+            0x16, 0x03, 0x01, 0x00, 0xf5,
+            // Handshake Header (ClientHello) (4 bytes)
+            0x01, 0x00, 0x00, 0xf1,
+            // Client Version (2 bytes)
+            0x03, 0x03,
+            // Random (32 bytes)
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+            0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+            0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+            // Session ID Length (0)
+            0x00,
+            // Cipher Suites Length (2) + Cipher Suite
+            0x00, 0x02, 0x00, 0xff,
+            // Compression Methods Length (1) + Method
+            0x01, 0x00,
+            // Extensions Length
+            0x00, 0x1c,
+            // SNI Extension (type 0x0000)
+            0x00, 0x00, // Extension type: SNI
+            0x00, 0x14, // Extension length: 20
+            0x00, 0x12, // SNI list length: 18
+            0x00,       // SNI type: hostname
+            0x00, 0x0f, // Hostname length: 15
+            // "www.example.com" (15 bytes)
+            0x77, 0x77, 0x77, 0x2e, 0x65, 0x78, 0x61, 0x6d,
+            0x70, 0x6c, 0x65, 0x2e, 0x63, 0x6f, 0x6d,
+        ]
+    }
+    
+    #[test]
+    fn test_find_sni_with_dots() {
+        let data = sample_client_hello_with_dots();
+        let sni_info = find_sni_in_client_hello(&data).expect("Should find SNI");
+        
+        assert_eq!(sni_info.hostname, "www.example.com");
+        
+        // Should have 2 dots in "www.example.com"
+        assert_eq!(sni_info.dot_positions.len(), 2);
+        
+        // Dot positions should be valid
+        for &pos in &sni_info.dot_positions {
+            assert!(pos < data.len());
+            assert_eq!(data[pos], b'.');
+        }
+    }
+    
+    #[test]
+    fn test_split_at_dots() {
+        let data = sample_client_hello_with_dots();
+        let config = SniObfuscationConfig {
+            split_at_dots: true,
+            split_tls_record_header: false,
+            tcp_fragmentation: true,
+            ..Default::default()
+        };
+        
+        let positions = calculate_split_positions(&data, &config);
+        
+        // Should have positions for dot splitting
+        assert!(!positions.is_empty());
+        
+        // Should have at least 4 positions for "www.example.com":
+        // - before SNI
+        // - before first dot, after first dot
+        // - before second dot, after second dot
+        // - hostname start/end
+        assert!(positions.len() >= 4);
+    }
+    
+    #[test]
+    fn test_split_tls_record_header() {
+        let data = sample_client_hello_with_dots();
+        let config = SniObfuscationConfig {
+            split_at_dots: false,
+            split_tls_record_header: true,
+            tcp_fragmentation: true,
+            ..Default::default()
+        };
+        
+        let positions = calculate_split_positions(&data, &config);
+        
+        // Should include TLS header split positions
+        assert!(positions.contains(&1)); // After Content Type
+        assert!(positions.contains(&4)); // Before last length byte
+        assert!(positions.contains(&5)); // After TLS Record Header
+    }
+    
+    #[test]
+    fn test_russia_optimized_with_dots() {
+        let data = sample_client_hello_with_dots();
+        let config = SniObfuscationConfig::russia_optimized();
+        
+        // Russia optimized should have both dot split and TLS header split
+        assert!(config.split_at_dots);
+        assert!(config.split_tls_record_header);
+        
+        let obfuscated = obfuscate_client_hello(&data, &config);
+        
+        // Should have many fragments due to dot splitting
+        assert!(obfuscated.fragments.len() >= 5);
+        
+        // Total should equal original
+        let total: usize = obfuscated.fragments.iter().map(|f| f.len()).sum();
+        assert_eq!(total, data.len());
+    }
+    
+    #[test]
+    fn test_calculate_sni_dot_positions() {
+        let data = sample_client_hello_with_dots();
+        let positions = calculate_sni_dot_positions(&data);
+        
+        // Should have positions for "www.example.com" (2 dots)
+        // hostname_start, dot1, after_dot1, dot2, after_dot2, hostname_end
+        assert!(positions.len() >= 4);
+        
+        // All positions should be valid
+        for &pos in &positions {
+            assert!(pos < data.len());
+        }
+    }
+    
+    #[test]
+    fn test_minimal_config() {
+        let config = SniObfuscationConfig::minimal();
+        
+        // Minimal should only have essential techniques
+        assert!(config.split_at_dots);
+        assert!(config.split_tls_record_header);
+        assert!(!config.case_randomization);
+        assert!(!config.use_decoy_sni);
+        assert!(!config.sni_padding);
+    }
+    
+    #[test]
+    fn test_fragment_data_with_dots() {
+        let data = sample_client_hello_with_dots();
+        let config = SniObfuscationConfig {
+            split_at_dots: true,
+            split_tls_record_header: true,
+            tcp_fragmentation: true,
+            ..Default::default()
+        };
+        
+        let positions = calculate_split_positions(&data, &config);
+        let fragments = fragment_data(&data, &positions);
+        
+        // Should have multiple fragments
+        assert!(fragments.len() > 1);
+        
+        // Reassembled data should equal original
+        let reassembled: Vec<u8> = fragments.into_iter().flatten().collect();
+        assert_eq!(reassembled, data);
     }
 }

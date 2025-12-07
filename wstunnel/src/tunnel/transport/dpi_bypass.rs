@@ -17,7 +17,7 @@ use bytes::Bytes;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 
-use super::tcp_fragmentation::{TcpFragmentConfig, FragmentationStrategy, fragment_data};
+use super::tcp_fragmentation::{TcpFragmentConfig, FragmentationStrategy, DisorderMode, fragment_data};
 use super::adversarial_ml::{AdversarialConfig, generate_crypto_padding};
 
 /// DPI bypass configuration
@@ -40,6 +40,20 @@ pub struct DpiBypassConfig {
     
     /// Only fragment first N bytes (TLS ClientHello is ~500 bytes)
     pub fragment_first_bytes: usize,
+    
+    /// Split TLS Record Header from payload (критично для ТСПУ)
+    /// Разделяет 5-байтный заголовок TLS от данных handshake
+    pub split_tls_record_header: bool,
+    
+    /// Split SNI hostname at each dot
+    /// Разделяет "www.example.com" на части: "www" | "." | "example" | "." | "com"
+    pub split_sni_at_dots: bool,
+    
+    /// Enable disorder mode (out-of-order packet delivery)
+    pub enable_disorder: bool,
+    
+    /// Disorder mode for OOB delivery
+    pub disorder_mode: DisorderMode,
 }
 
 impl Default for DpiBypassConfig {
@@ -51,6 +65,10 @@ impl Default for DpiBypassConfig {
             sni_case_randomization: false,
             adversarial_padding: false,
             fragment_first_bytes: 600,
+            split_tls_record_header: false,
+            split_sni_at_dots: false,
+            enable_disorder: false,
+            disorder_mode: DisorderMode::None,
         }
     }
 }
@@ -61,7 +79,7 @@ impl DpiBypassConfig {
         Self::default()
     }
     
-    /// Configuration optimized for Russian TSPU
+    /// Configuration optimized for Russian TSPU (basic)
     pub fn russia() -> Self {
         Self {
             tcp_fragmentation: true,
@@ -70,18 +88,49 @@ impl DpiBypassConfig {
             sni_case_randomization: true,
             adversarial_padding: true,
             fragment_first_bytes: 600,
+            split_tls_record_header: true,   // Включено для ТСПУ
+            split_sni_at_dots: true,         // Включено для ТСПУ
+            enable_disorder: false,
+            disorder_mode: DisorderMode::None,
         }
     }
     
-    /// Aggressive mode for maximum evasion
-    pub fn aggressive() -> Self {
+    /// Aggressive mode for modern Russian DPI (ТСПУ 2024+)
+    /// Использует все доступные техники включая disorder
+    pub fn russia_aggressive() -> Self {
         Self {
             tcp_fragmentation: true,
-            fragment_size: 2,
-            inter_fragment_delay_us: 200,
+            fragment_size: 1,                // Побайтовая фрагментация
+            inter_fragment_delay_us: 50,
             sni_case_randomization: true,
             adversarial_padding: true,
             fragment_first_bytes: 600,
+            split_tls_record_header: true,
+            split_sni_at_dots: true,
+            enable_disorder: true,
+            disorder_mode: DisorderMode::SecondFirst,  // Эффективен против stateful DPI
+        }
+    }
+    
+    /// Aggressive mode for maximum evasion (legacy name)
+    pub fn aggressive() -> Self {
+        Self::russia_aggressive()
+    }
+    
+    /// Minimal overhead mode - только критичные техники
+    /// Минимальное влияние на производительность
+    pub fn minimal() -> Self {
+        Self {
+            tcp_fragmentation: true,
+            fragment_size: 40,
+            inter_fragment_delay_us: 10,
+            sni_case_randomization: false,
+            adversarial_padding: false,
+            fragment_first_bytes: 600,
+            split_tls_record_header: true,   // Критично
+            split_sni_at_dots: true,         // Критично
+            enable_disorder: false,
+            disorder_mode: DisorderMode::None,
         }
     }
     
@@ -89,7 +138,13 @@ impl DpiBypassConfig {
     pub fn to_fragment_config(&self) -> TcpFragmentConfig {
         TcpFragmentConfig {
             strategy: if self.tcp_fragmentation {
-                FragmentationStrategy::FixedSize(self.fragment_size)
+                if self.split_sni_at_dots {
+                    FragmentationStrategy::SniDotsSplit
+                } else if self.split_tls_record_header {
+                    FragmentationStrategy::TlsRecordSplit
+                } else {
+                    FragmentationStrategy::FixedSize(self.fragment_size)
+                }
             } else {
                 FragmentationStrategy::None
             },
@@ -99,8 +154,11 @@ impl DpiBypassConfig {
             flush_after_fragment: true,
             fragment_first_n_bytes: self.fragment_first_bytes,
             tls_split_positions: vec![],
-            enable_disorder: false,
-            disorder_probability: 0.0,
+            enable_disorder: self.enable_disorder,
+            disorder_probability: if self.enable_disorder { 1.0 } else { 0.0 },
+            disorder_mode: self.disorder_mode,
+            split_tls_record_header: self.split_tls_record_header,
+            split_sni_at_dots: self.split_sni_at_dots,
         }
     }
 }
@@ -367,6 +425,9 @@ mod tests {
         let config = DpiBypassConfig::default();
         assert!(!config.tcp_fragmentation);
         assert_eq!(config.fragment_size, 40);
+        assert!(!config.split_tls_record_header);
+        assert!(!config.split_sni_at_dots);
+        assert!(!config.enable_disorder);
     }
     
     #[test]
@@ -375,6 +436,32 @@ mod tests {
         assert!(config.tcp_fragmentation);
         assert!(config.sni_case_randomization);
         assert!(config.adversarial_padding);
+        // New features should be enabled for Russia config
+        assert!(config.split_tls_record_header);
+        assert!(config.split_sni_at_dots);
+    }
+    
+    #[test]
+    fn test_russia_aggressive_config() {
+        let config = DpiBypassConfig::russia_aggressive();
+        assert!(config.tcp_fragmentation);
+        assert!(config.split_tls_record_header);
+        assert!(config.split_sni_at_dots);
+        assert!(config.enable_disorder);
+        assert_eq!(config.disorder_mode, DisorderMode::SecondFirst);
+        assert_eq!(config.fragment_size, 1); // Single-byte fragmentation
+    }
+    
+    #[test]
+    fn test_minimal_config() {
+        let config = DpiBypassConfig::minimal();
+        assert!(config.tcp_fragmentation);
+        assert!(config.split_tls_record_header);
+        assert!(config.split_sni_at_dots);
+        // Minimal should not use expensive techniques
+        assert!(!config.sni_case_randomization);
+        assert!(!config.adversarial_padding);
+        assert!(!config.enable_disorder);
     }
     
     #[test]
@@ -400,5 +487,53 @@ mod tests {
         // Large packet should get less/no padding
         let padding_large = generate_ws_padding(1500, &config);
         assert!(padding_large.len() < padding.len());
+    }
+    
+    #[test]
+    fn test_to_fragment_config_with_sni_dots() {
+        let dpi_config = DpiBypassConfig {
+            tcp_fragmentation: true,
+            split_sni_at_dots: true,
+            split_tls_record_header: true,
+            ..Default::default()
+        };
+        
+        let frag_config = dpi_config.to_fragment_config();
+        
+        // Should use SniDotsSplit strategy when split_sni_at_dots is enabled
+        assert!(matches!(frag_config.strategy, FragmentationStrategy::SniDotsSplit));
+        assert!(frag_config.split_tls_record_header);
+        assert!(frag_config.split_sni_at_dots);
+    }
+    
+    #[test]
+    fn test_to_fragment_config_with_tls_record() {
+        let dpi_config = DpiBypassConfig {
+            tcp_fragmentation: true,
+            split_sni_at_dots: false,
+            split_tls_record_header: true,
+            ..Default::default()
+        };
+        
+        let frag_config = dpi_config.to_fragment_config();
+        
+        // Should use TlsRecordSplit strategy when only split_tls_record_header is enabled
+        assert!(matches!(frag_config.strategy, FragmentationStrategy::TlsRecordSplit));
+    }
+    
+    #[test]
+    fn test_to_fragment_config_with_disorder() {
+        let dpi_config = DpiBypassConfig {
+            tcp_fragmentation: true,
+            enable_disorder: true,
+            disorder_mode: DisorderMode::SecondFirst,
+            ..Default::default()
+        };
+        
+        let frag_config = dpi_config.to_fragment_config();
+        
+        assert!(frag_config.enable_disorder);
+        assert_eq!(frag_config.disorder_probability, 1.0);
+        assert_eq!(frag_config.disorder_mode, DisorderMode::SecondFirst);
     }
 }

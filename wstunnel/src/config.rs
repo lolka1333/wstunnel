@@ -315,10 +315,11 @@ pub struct Client {
     pub dpi_bypass_fragment_size: usize,
 
     /// DPI bypass preset configuration
-    /// Options: russia, aggressive, custom
-    /// - russia: Optimized for Russian TSPU (fragment_size=40)
-    /// - aggressive: Maximum evasion (fragment_size=2)
-    /// - custom: Use --dpi-bypass-fragment-size value
+    /// Options: russia, aggressive, minimal, custom
+    /// - russia: Optimized for Russian TSPU (fragment_size=40, TLS split, SNI dots split)
+    /// - aggressive: Maximum evasion (fragment_size=1, disorder=SecondFirst)
+    /// - minimal: Low overhead (only TLS split + SNI dots split)
+    /// - custom: Use other --dpi-bypass-* parameters
     #[cfg_attr(feature = "clap", arg(
         long,
         value_name = "PRESET",
@@ -327,6 +328,54 @@ pub struct Client {
         requires = "dpi_bypass"
     ))]
     pub dpi_bypass_preset: String,
+
+    /// Enable TLS Record Header splitting (5-byte header separate from payload)
+    /// Critical for bypassing stateless DPI that analyzes TLS headers
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        default_value = "false",
+        verbatim_doc_comment,
+        requires = "dpi_bypass"
+    ))]
+    pub dpi_bypass_split_tls_record: bool,
+
+    /// Enable SNI hostname splitting at each dot
+    /// Splits "www.example.com" into parts: "www" | "." | "example" | "." | "com"
+    /// Critical for bypassing SNI-based blocking
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        default_value = "false",
+        verbatim_doc_comment,
+        requires = "dpi_bypass"
+    ))]
+    pub dpi_bypass_split_sni_dots: bool,
+
+    /// Enable disorder mode (out-of-order packet delivery)
+    /// Sends TCP fragments in non-sequential order to confuse stateful DPI
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        default_value = "false",
+        verbatim_doc_comment,
+        requires = "dpi_bypass"
+    ))]
+    pub dpi_bypass_disorder: bool,
+
+    /// Disorder mode for out-of-order delivery
+    /// Options: none, swap23, firstlast, secondfirst, shuffle, reverse
+    /// - none: Disabled
+    /// - swap23: Swap 2nd and 3rd fragments (classic)
+    /// - firstlast: Send first fragment last
+    /// - secondfirst: Send second fragment first (effective against stateful DPI)
+    /// - shuffle: Random order (except first)
+    /// - reverse: Reverse order (except first)
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        value_name = "MODE",
+        default_value = "none",
+        verbatim_doc_comment,
+        requires = "dpi_bypass_disorder"
+    ))]
+    pub dpi_bypass_disorder_mode: String,
 
     /// Dns resolver to use to lookup ips of domain name. Can be specified multiple time
     /// Example:
