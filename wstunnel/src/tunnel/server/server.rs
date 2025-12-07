@@ -29,7 +29,8 @@ use parking_lot::Mutex;
 use socket2::SockRef;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
-use std::net::SocketAddr;
+use std::hash::Hash;
+use std::net::{Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, LazyLock};
@@ -39,7 +40,8 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tracing::{Instrument, Level, Span, error, info, span, warn};
-use url::Url;
+use ahash::AHasher;
+use url::{Host, Url};
 
 #[derive(Debug)]
 pub struct TlsServerConfig {
