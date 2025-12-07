@@ -29,7 +29,7 @@ use parking_lot::Mutex;
 use socket2::SockRef;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
-use std::hash::Hash;
+use std::hash::{Hash, Hasher};
 use std::net::{Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::pin::Pin;
