@@ -34,10 +34,6 @@
 ///    - Add delays between fragments
 ///    - Causes DPI timeout before reassembly completes
 ///
-/// 4. **Disorder Fragmentation**
-///    - Send fragments out of order
-///    - Some DPI can't handle reordering
-///
 /// ## References
 /// - GoodbyeDPI project strategies
 /// - zapret project research
@@ -86,35 +82,6 @@ pub enum FragmentationStrategy {
     SniDotsSplit,
 }
 
-/// Disorder mode for out-of-order packet delivery
-/// Улучшенные режимы OOB (Out-of-Order Bytes) доставки
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DisorderMode {
-    /// Отключено
-    #[default]
-    None,
-    
-    /// Поменять 2-й и 3-й фрагменты местами
-    /// Классический disorder, сохраняет первый пакет для TLS
-    SwapSecondThird,
-    
-    /// Отправить первый фрагмент последним
-    /// Агрессивный режим, требует буферизации на стороне сервера
-    FirstLast,
-    
-    /// Отправить второй фрагмент первым
-    /// Эффективен против stateful DPI с коротким таймаутом
-    SecondFirst,
-    
-    /// Случайная перестановка всех фрагментов кроме первого
-    /// Максимальный disorder, может вызвать задержки
-    RandomShuffle,
-    
-    /// Reverse order - обратный порядок всех фрагментов кроме первого
-    /// Предсказуемый, но эффективный против некоторых DPI
-    Reverse,
-}
-
 /// TCP fragmentation configuration
 #[derive(Debug, Clone)]
 pub struct TcpFragmentConfig {
@@ -139,15 +106,6 @@ pub struct TcpFragmentConfig {
     /// Split positions for TLS ClientHello (auto-detected if empty)
     pub tls_split_positions: Vec<usize>,
     
-    /// Enable disorder sending (send fragments out of order)
-    pub enable_disorder: bool,
-    
-    /// Disorder probability (0.0-1.0)
-    pub disorder_probability: f64,
-    
-    /// Disorder mode - улучшенный режим OOB доставки
-    pub disorder_mode: DisorderMode,
-    
     /// Split TLS Record Header from payload (критично для ТСПУ)
     /// Разделяет 5-байтный заголовок TLS Record от данных
     pub split_tls_record_header: bool,
@@ -166,9 +124,6 @@ impl Default for TcpFragmentConfig {
             flush_after_fragment: true,
             fragment_first_n_bytes: 0, // Fragment all
             tls_split_positions: vec![],
-            enable_disorder: false,
-            disorder_probability: 0.0,
-            disorder_mode: DisorderMode::None,
             split_tls_record_header: false,
             split_sni_at_dots: false,
         }
@@ -186,16 +141,13 @@ impl TcpFragmentConfig {
             flush_after_fragment: true,
             fragment_first_n_bytes: 600, // Only fragment ClientHello
             tls_split_positions: vec![],
-            enable_disorder: false,
-            disorder_probability: 0.0,
-            disorder_mode: DisorderMode::None,
             split_tls_record_header: true,  // Критично для ТСПУ
             split_sni_at_dots: true,        // Разделение SNI на точках
         }
     }
     
     /// Aggressive configuration for modern Russian DPI (ТСПУ 2024+)
-    /// Использует все доступные техники
+    /// Использует максимальную фрагментацию
     pub fn russia_aggressive() -> Self {
         Self {
             strategy: FragmentationStrategy::TlsRecordSplit,
@@ -205,9 +157,6 @@ impl TcpFragmentConfig {
             flush_after_fragment: true,
             fragment_first_n_bytes: 600,
             tls_split_positions: vec![],
-            enable_disorder: true,
-            disorder_probability: 0.5,
-            disorder_mode: DisorderMode::SecondFirst,
             split_tls_record_header: true,
             split_sni_at_dots: true,
         }
@@ -223,9 +172,6 @@ impl TcpFragmentConfig {
             flush_after_fragment: true,
             fragment_first_n_bytes: 600,
             tls_split_positions: vec![],
-            enable_disorder: false,
-            disorder_probability: 0.0,
-            disorder_mode: DisorderMode::None,
             split_tls_record_header: true,
             split_sni_at_dots: false,
         }
@@ -241,48 +187,8 @@ impl TcpFragmentConfig {
             flush_after_fragment: true,
             fragment_first_n_bytes: 600,
             tls_split_positions: vec![],
-            enable_disorder: false,
-            disorder_probability: 0.0,
-            disorder_mode: DisorderMode::None,
             split_tls_record_header: false,  // Не нужно при побайтовой фрагментации
             split_sni_at_dots: false,
-        }
-    }
-    
-    /// Disorder fragmentation (send out of order) - legacy
-    pub fn with_disorder() -> Self {
-        Self {
-            strategy: FragmentationStrategy::FixedSize(40),
-            inter_fragment_delay_us: 100,
-            send_first_immediately: true,
-            use_tcp_nodelay: true,
-            flush_after_fragment: true,
-            fragment_first_n_bytes: 600,
-            tls_split_positions: vec![],
-            enable_disorder: true,
-            disorder_probability: 0.3,
-            disorder_mode: DisorderMode::SwapSecondThird,
-            split_tls_record_header: false,
-            split_sni_at_dots: false,
-        }
-    }
-    
-    /// Advanced disorder with SecondFirst mode
-    /// Отправляет второй фрагмент первым - эффективен против stateful DPI
-    pub fn with_disorder_second_first() -> Self {
-        Self {
-            strategy: FragmentationStrategy::FixedSize(40),
-            inter_fragment_delay_us: 100,
-            send_first_immediately: false,  // Не отправляем первый сразу
-            use_tcp_nodelay: true,
-            flush_after_fragment: true,
-            fragment_first_n_bytes: 600,
-            tls_split_positions: vec![],
-            enable_disorder: true,
-            disorder_probability: 1.0,  // Всегда disorder
-            disorder_mode: DisorderMode::SecondFirst,
-            split_tls_record_header: true,
-            split_sni_at_dots: true,
         }
     }
     
@@ -296,9 +202,6 @@ impl TcpFragmentConfig {
             flush_after_fragment: true,
             fragment_first_n_bytes: 600,
             tls_split_positions: vec![],
-            enable_disorder: false,
-            disorder_probability: 0.0,
-            disorder_mode: DisorderMode::None,
             split_tls_record_header: true,
             split_sni_at_dots: false,
         }
@@ -314,9 +217,6 @@ impl TcpFragmentConfig {
             flush_after_fragment: true,
             fragment_first_n_bytes: 600,
             tls_split_positions: vec![],
-            enable_disorder: false,
-            disorder_probability: 0.0,
-            disorder_mode: DisorderMode::None,
             split_tls_record_header: false,
             split_sni_at_dots: true,
         }
@@ -331,9 +231,6 @@ pub struct FragmentedData {
     
     /// Delay between fragments
     pub delay_us: u64,
-    
-    /// Whether to send in disorder
-    pub disorder: bool,
     
     /// Original data length
     pub original_length: usize,
@@ -538,68 +435,6 @@ pub fn find_sni_info(data: &[u8]) -> Option<SniInfoBasic> {
     None
 }
 
-/// Apply disorder mode to fragments
-/// Переставляет фрагменты согласно выбранному режиму disorder
-fn apply_disorder_mode(fragments: &mut Vec<Bytes>, mode: DisorderMode, state: u64) {
-    if fragments.len() < 2 {
-        return;
-    }
-    
-    match mode {
-        DisorderMode::None => {}
-        
-        DisorderMode::SwapSecondThird => {
-            // Меняем 2-й и 3-й фрагменты
-            if fragments.len() >= 3 {
-                fragments.swap(1, 2);
-            }
-        }
-        
-        DisorderMode::FirstLast => {
-            // Первый фрагмент отправляем последним
-            if fragments.len() >= 2 {
-                let first = fragments.remove(0);
-                fragments.push(first);
-            }
-        }
-        
-        DisorderMode::SecondFirst => {
-            // Второй фрагмент отправляем первым
-            if fragments.len() >= 2 {
-                fragments.swap(0, 1);
-            }
-        }
-        
-        DisorderMode::RandomShuffle => {
-            // Случайная перестановка всех кроме первого
-            if fragments.len() > 2 {
-                // Сохраняем первый фрагмент
-                let first = fragments[0].clone();
-                let rest = &mut fragments[1..];
-                
-                // Fisher-Yates shuffle
-                let mut rng = state;
-                for i in (1..rest.len()).rev() {
-                    rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-                    let j = (rng as usize) % (i + 1);
-                    rest.swap(i, j);
-                }
-                
-                fragments[0] = first;
-            }
-        }
-        
-        DisorderMode::Reverse => {
-            // Обратный порядок всех кроме первого
-            if fragments.len() > 2 {
-                let first = fragments[0].clone();
-                fragments[1..].reverse();
-                fragments[0] = first;
-            }
-        }
-    }
-}
-
 /// Fragment data according to configuration
 pub fn fragment_data(data: &[u8], config: &TcpFragmentConfig) -> FragmentedData {
     let original_length = data.len();
@@ -774,34 +609,12 @@ pub fn fragment_data(data: &[u8], config: &TcpFragmentConfig) -> FragmentedData 
             let header = Bytes::copy_from_slice(&first_fragment[..TLS_RECORD_HEADER_SIZE]);
             let payload = Bytes::copy_from_slice(&first_fragment[TLS_RECORD_HEADER_SIZE..]);
             fragments = vec![header, payload];
-            fragments.extend(std::iter::once(Bytes::new()).take(0)); // Placeholder for remaining
         }
-    }
-    
-    // Apply disorder if enabled (legacy mode)
-    let state = FRAGMENT_STATE.fetch_add(1, Ordering::Relaxed);
-    let disorder = config.enable_disorder && config.disorder_probability > 0.0;
-    
-    if disorder && fragments.len() > 2 {
-        // Legacy disorder: swap based on probability
-        if (state % 100) as f64 / 100.0 < config.disorder_probability {
-            // Use new disorder mode if set, otherwise fall back to SwapSecondThird
-            let mode = if config.disorder_mode != DisorderMode::None {
-                config.disorder_mode
-            } else {
-                DisorderMode::SwapSecondThird
-            };
-            apply_disorder_mode(&mut fragments, mode, state);
-        }
-    } else if config.disorder_mode != DisorderMode::None && fragments.len() > 1 {
-        // New disorder mode - always apply if mode is set
-        apply_disorder_mode(&mut fragments, config.disorder_mode, state);
     }
     
     FragmentedData {
         fragments,
         delay_us: config.inter_fragment_delay_us,
-        disorder,
         original_length,
     }
 }
@@ -1207,40 +1020,7 @@ mod tests {
         assert_eq!(optimal_fragment_size(1000), 100);
     }
     
-    #[test]
-    fn test_disorder_fragmentation() {
-        // Create config with guaranteed disorder
-        let mut config = TcpFragmentConfig {
-            strategy: FragmentationStrategy::FixedSize(10),
-            fragment_first_n_bytes: 0,
-            enable_disorder: true,
-            disorder_probability: 1.0, // Always disorder
-            ..Default::default()
-        };
-        
-        let data: Vec<u8> = (0..50).collect();
-        
-        // Run multiple times to test disorder
-        let mut different_orders = false;
-        let original = fragment_data(&data, &config);
-        
-        config.disorder_probability = 1.0;
-        for _ in 0..10 {
-            let fragmented = fragment_data(&data, &config);
-            // Check if order is different from original
-            if fragmented.fragments.len() >= 3 {
-                if fragmented.fragments[1] != original.fragments[1] {
-                    different_orders = true;
-                    break;
-                }
-            }
-        }
-        
-        // With disorder enabled, we should sometimes see different orders
-        // (Note: this might not always trigger due to randomness)
-    }
-    
-    // ===== New tests for TLS Record Split and SNI Dots Split =====
+    // ===== Tests for TLS Record Split and SNI Dots Split =====
     
     // Sample TLS ClientHello with SNI "www.example.com"
     fn sample_client_hello_with_sni() -> Vec<u8> {
@@ -1357,77 +1137,11 @@ mod tests {
     }
     
     #[test]
-    fn test_disorder_mode_swap_second_third() {
-        let mut fragments: Vec<Bytes> = vec![
-            Bytes::from_static(b"first"),
-            Bytes::from_static(b"second"),
-            Bytes::from_static(b"third"),
-            Bytes::from_static(b"fourth"),
-        ];
-        
-        apply_disorder_mode(&mut fragments, DisorderMode::SwapSecondThird, 0);
-        
-        assert_eq!(&fragments[0][..], b"first");
-        assert_eq!(&fragments[1][..], b"third");  // Swapped
-        assert_eq!(&fragments[2][..], b"second"); // Swapped
-        assert_eq!(&fragments[3][..], b"fourth");
-    }
-    
-    #[test]
-    fn test_disorder_mode_first_last() {
-        let mut fragments: Vec<Bytes> = vec![
-            Bytes::from_static(b"first"),
-            Bytes::from_static(b"second"),
-            Bytes::from_static(b"third"),
-        ];
-        
-        apply_disorder_mode(&mut fragments, DisorderMode::FirstLast, 0);
-        
-        assert_eq!(&fragments[0][..], b"second");
-        assert_eq!(&fragments[1][..], b"third");
-        assert_eq!(&fragments[2][..], b"first"); // Moved to last
-    }
-    
-    #[test]
-    fn test_disorder_mode_second_first() {
-        let mut fragments: Vec<Bytes> = vec![
-            Bytes::from_static(b"first"),
-            Bytes::from_static(b"second"),
-            Bytes::from_static(b"third"),
-        ];
-        
-        apply_disorder_mode(&mut fragments, DisorderMode::SecondFirst, 0);
-        
-        assert_eq!(&fragments[0][..], b"second"); // Swapped with first
-        assert_eq!(&fragments[1][..], b"first");  // Swapped with second
-        assert_eq!(&fragments[2][..], b"third");
-    }
-    
-    #[test]
-    fn test_disorder_mode_reverse() {
-        let mut fragments: Vec<Bytes> = vec![
-            Bytes::from_static(b"first"),
-            Bytes::from_static(b"second"),
-            Bytes::from_static(b"third"),
-            Bytes::from_static(b"fourth"),
-        ];
-        
-        apply_disorder_mode(&mut fragments, DisorderMode::Reverse, 0);
-        
-        assert_eq!(&fragments[0][..], b"first");  // First stays first
-        assert_eq!(&fragments[1][..], b"fourth"); // Rest reversed
-        assert_eq!(&fragments[2][..], b"third");
-        assert_eq!(&fragments[3][..], b"second");
-    }
-    
-    #[test]
     fn test_russia_aggressive_config() {
         let config = TcpFragmentConfig::russia_aggressive();
         
         assert!(config.split_tls_record_header);
         assert!(config.split_sni_at_dots);
-        assert!(config.enable_disorder);
-        assert_eq!(config.disorder_mode, DisorderMode::SecondFirst);
         assert!(matches!(config.strategy, FragmentationStrategy::TlsRecordSplit));
     }
     

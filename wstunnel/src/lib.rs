@@ -218,24 +218,11 @@ pub async fn create_client(
 
     // DPI bypass configuration for Russian TSPU evasion
     let dpi_bypass_config = if args.dpi_bypass {
-        use tunnel::transport::tcp_fragmentation::DisorderMode;
-        
-        // Parse disorder mode from string
-        let disorder_mode = match args.dpi_bypass_disorder_mode.as_str() {
-            "swap23" => DisorderMode::SwapSecondThird,
-            "firstlast" => DisorderMode::FirstLast,
-            "secondfirst" => DisorderMode::SecondFirst,
-            "shuffle" => DisorderMode::RandomShuffle,
-            "reverse" => DisorderMode::Reverse,
-            _ => DisorderMode::None,
-        };
-        
-        info!("DPI bypass enabled with preset '{}' (fragment_size={}, tls_split={}, sni_dots={}, disorder={})", 
+        info!("DPI bypass enabled with preset '{}' (fragment_size={}, tls_split={}, sni_dots={})", 
             args.dpi_bypass_preset, 
             args.dpi_bypass_fragment_size,
             args.dpi_bypass_split_tls_record || args.dpi_bypass_preset != "custom",
-            args.dpi_bypass_split_sni_dots || args.dpi_bypass_preset != "custom",
-            args.dpi_bypass_disorder);
+            args.dpi_bypass_split_sni_dots || args.dpi_bypass_preset != "custom");
         
         let config = match args.dpi_bypass_preset.as_str() {
             "aggressive" => DpiBypassConfig::russia_aggressive(),
@@ -249,8 +236,6 @@ pub async fn create_client(
                 fragment_first_bytes: 600,
                 split_tls_record_header: args.dpi_bypass_split_tls_record,
                 split_sni_at_dots: args.dpi_bypass_split_sni_dots,
-                enable_disorder: args.dpi_bypass_disorder,
-                disorder_mode,
             },
             _ => DpiBypassConfig::russia(), // Default to russia preset
         };
