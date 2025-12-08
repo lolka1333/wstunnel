@@ -248,12 +248,16 @@ fn apply_linux_fragmentation(
     config: &IpFragmentationConfig,
     result: &mut IpFragmentationResult,
 ) {
-    use libc::{
-        c_int, setsockopt, IPPROTO_IP, IPPROTO_TCP,
-        IP_MTU_DISCOVER, IP_PMTUDISC_DONT, IP_PMTUDISC_WANT,
-        IP_TTL, TCP_MAXSEG,
+    use nix::libc::{
+        c_int, c_void, socklen_t, setsockopt, 
+        IPPROTO_IP, IPPROTO_TCP, IP_TTL, TCP_MAXSEG,
     };
     use std::mem::size_of;
+    
+    // Linux-specific constants (not always in libc)
+    const IP_MTU_DISCOVER: c_int = 10;
+    const IP_PMTUDISC_DONT: c_int = 0;
+    const IP_PMTUDISC_WANT: c_int = 1;
     
     let fd = stream.as_raw_fd();
     
@@ -270,8 +274,8 @@ fn apply_linux_fragmentation(
                 fd,
                 IPPROTO_IP,
                 IP_MTU_DISCOVER,
-                &pmtu_discover as *const c_int as *const libc::c_void,
-                size_of::<c_int>() as libc::socklen_t,
+                &pmtu_discover as *const c_int as *const c_void,
+                size_of::<c_int>() as socklen_t,
             )
         };
         
@@ -300,8 +304,8 @@ fn apply_linux_fragmentation(
                 fd,
                 IPPROTO_TCP,
                 TCP_MAXSEG,
-                &mss as *const c_int as *const libc::c_void,
-                size_of::<c_int>() as libc::socklen_t,
+                &mss as *const c_int as *const c_void,
+                size_of::<c_int>() as socklen_t,
             )
         };
         
@@ -327,8 +331,8 @@ fn apply_linux_fragmentation(
                 fd,
                 IPPROTO_IP,
                 IP_TTL,
-                &ttl as *const c_int as *const libc::c_void,
-                size_of::<c_int>() as libc::socklen_t,
+                &ttl as *const c_int as *const c_void,
+                size_of::<c_int>() as socklen_t,
             )
         };
         
@@ -458,7 +462,7 @@ fn apply_macos_fragmentation(
     config: &IpFragmentationConfig,
     result: &mut IpFragmentationResult,
 ) {
-    use libc::{c_int, setsockopt, IPPROTO_IP, IPPROTO_TCP, IP_TTL};
+    use nix::libc::{c_int, c_void, socklen_t, setsockopt, IPPROTO_IP, IP_TTL};
     use std::mem::size_of;
     use std::os::unix::io::AsRawFd;
     
@@ -476,8 +480,8 @@ fn apply_macos_fragmentation(
                 fd,
                 IPPROTO_IP,
                 IP_DONTFRAG,
-                &dont_frag as *const c_int as *const libc::c_void,
-                size_of::<c_int>() as libc::socklen_t,
+                &dont_frag as *const c_int as *const c_void,
+                size_of::<c_int>() as socklen_t,
             )
         };
         
@@ -500,8 +504,8 @@ fn apply_macos_fragmentation(
                 fd,
                 IPPROTO_IP,
                 IP_TTL,
-                &ttl as *const c_int as *const libc::c_void,
-                size_of::<c_int>() as libc::socklen_t,
+                &ttl as *const c_int as *const c_void,
+                size_of::<c_int>() as socklen_t,
             )
         };
         
