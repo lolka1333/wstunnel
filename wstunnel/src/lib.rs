@@ -84,11 +84,16 @@ pub async fn create_client(
     };
 
     let http_proxy = mk_http_proxy(args.http_proxy, args.http_proxy_login, args.http_proxy_password)?;
-    let dns_resolver = DnsResolver::new_from_urls(
+    
+    // Create DNS resolver with optional RFC 8467 padding for privacy
+    // Padding makes DNS queries consistent size to evade DPI analysis
+    let dns_resolver = DnsResolver::new_from_urls_with_padding(
         &args.dns_resolver,
         http_proxy.clone(),
         SoMark::new(args.socket_so_mark),
         !args.dns_resolver_prefer_ipv4,
+        args.dns_padding,
+        &args.dns_padding_strategy,
     )
     .expect("cannot create dns resolver");
 
@@ -656,11 +661,13 @@ async fn run_server_impl(args: Server, executor: impl TokioExecutorRef) -> anyho
         timeout_connect: Duration::from_secs(10),
         websocket_mask_frame: args.websocket_mask_frame,
         tls: tls_config,
-        dns_resolver: DnsResolver::new_from_urls(
+        dns_resolver: DnsResolver::new_from_urls_with_padding(
             &args.dns_resolver,
             None,
             SoMark::new(args.socket_so_mark),
             !args.dns_resolver_prefer_ipv4,
+            args.dns_padding,
+            "recommended",
         )
         .expect("Cannot create DNS resolver"),
         restriction_config: args.restrict_config,

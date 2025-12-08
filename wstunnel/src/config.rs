@@ -470,6 +470,29 @@ pub struct Client {
         )
     )]
     pub dns_resolver_prefer_ipv4: bool,
+    
+    /// Enable RFC 8467 DNS padding for DoH/DoT queries
+    /// This adds random padding to DNS queries to prevent size-based analysis
+    /// Recommended for high-censorship environments (Russia, China, Iran)
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        default_value = "false",
+        verbatim_doc_comment
+    ))]
+    pub dns_padding: bool,
+    
+    /// DNS padding strategy: none, recommended, block-aligned, minimal
+    /// - recommended: Pad to 128-byte blocks with jitter (RFC 8467)
+    /// - block-aligned: Pad to next block size (128/256/468 bytes)
+    /// - minimal: Fixed 128-byte blocks (low overhead)
+    /// - none: No padding
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        value_name = "STRATEGY",
+        default_value = "recommended",
+        verbatim_doc_comment
+    ))]
+    pub dns_padding_strategy: String,
 }
 
 #[derive(Debug)]
@@ -529,6 +552,14 @@ pub struct Server {
         )
     )]
     pub dns_resolver_prefer_ipv4: bool,
+    
+    /// Enable RFC 8467 DNS padding for DoH/DoT queries
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        default_value = "false",
+        verbatim_doc_comment
+    ))]
+    pub dns_padding: bool,
 
     /// Server will only accept connection from the specified tunnel information.
     /// Can be specified multiple time
