@@ -7,3 +7,4 @@ pub mod l4_transport_stream;
 pub use client::WsClient;
 pub use config::TlsClientConfig;
 pub use config::WsClientConfig;
+pub use config::UtlsClientConfig;

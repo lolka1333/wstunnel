@@ -60,7 +60,13 @@ hickory-resolver = { version = "0.25.2", default-features = false, features = [
   "rustls-platform-verifier",
 ] }
 aws-lc-rs = { version = "*", optional = true }
-pcap-file = "2.0.0"
+pcap-file = { version = "2.0.0", optional = true }
+
+# uTLS/BoringSSL integration for browser fingerprint mimicry
+# Provides complete ClientHello customization with GREASE support
+boring = { version = "4.19.0", optional = true }
+tokio-boring = { version = "4.19.0", optional = true }
+rand = "0.9.2"
 
 [target.'cfg(not(target_family = "unix"))'.dependencies]
 crossterm = { version = "0.29.0" }
@@ -68,9 +74,6 @@ tokio-util = { version = "0.7.16", features = ["io"] }
 
 [target.'cfg(target_family = "unix")'.dependencies]
 tokio-fd = "0.3.0"
-
-# Optional PCAP analysis for learning traffic patterns
-pcap-file = { version = "2.0.0", optional = true }
 
 [dev-dependencies]
 testcontainers = "0.26.0"
@@ -83,9 +86,14 @@ get_if_addrs = "0.5.3"
 pcap-file = "2.0.0"  # For PCAP analysis tests
 
 [features]
-default = ["aws-lc-rs"]
+# Default: включает aws-lc-rs и uTLS для полной поддержки browser fingerprint mimicry
+default = ["aws-lc-rs", "utls"]
 clap = ["dep:clap"]
 pcap-learning = ["dep:pcap-file"]  # Enable PCAP-based traffic learning
+# uTLS: Enable BoringSSL-based browser fingerprint mimicry (Chrome, Firefox, Safari, Edge)
+# This provides GREASE support and full ClientHello customization for DPI evasion
+# ⚠️ CRITICAL for Russian DPI evasion - без GREASE fingerprint детектируется мгновенно!
+utls = ["dep:boring", "dep:tokio-boring"]
 aws-lc-rs = [
   "tokio-rustls/aws-lc-rs",
   "rcgen/aws_lc_rs",

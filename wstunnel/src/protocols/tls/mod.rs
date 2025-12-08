@@ -4,6 +4,8 @@ mod utils;
 
 pub use server::connect;
 pub use server::connect_with_dpi_bypass;
+#[allow(unused_imports)]
+pub use server::connect_with_utls;
 pub use server::load_certificates_from_pem;
 pub use server::load_private_key_from_file;
 pub use server::tls_acceptor;

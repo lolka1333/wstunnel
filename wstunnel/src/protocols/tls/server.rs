@@ -11,6 +11,8 @@ use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
 
 use crate::tunnel::client::WsClientConfig;
+#[allow(unused_imports)]
+use crate::tunnel::client::UtlsClientConfig;
 use crate::tunnel::server::TlsServerConfig;
 use crate::tunnel::transport::TransportAddr;
 use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -330,5 +332,69 @@ pub async fn connect_with_dpi_bypass(
     let tls_connector = tls_config.tls_connector();
     let tls_stream = tls_connector.connect(sni, fragmenting_stream).await?;
 
+    Ok(tls_stream)
+}
+
+/// Connect with uTLS - mimics browser TLS fingerprint for DPI evasion
+/// 
+/// This function uses BoringSSL (via boring crate) to create a TLS connection
+/// that exactly mimics a real browser's TLS fingerprint.
+/// 
+/// ## Features
+/// - Complete GREASE support (RFC 8701)
+/// - Exact browser cipher suite order
+/// - Browser-like extension set
+/// - Session resumption
+/// - 0-RTT early data
+/// 
+/// ## Supported Browsers
+/// - Chrome 120+ (Windows/macOS/Linux)
+/// - Firefox 121+ (Windows/macOS)
+/// - Safari 17+ (macOS/iOS)
+/// - Edge 120+ (Windows)
+/// 
+/// ## Usage
+/// Enable with `--utls chrome` or `--utls firefox` CLI option.
+#[allow(dead_code)]
+pub async fn connect_with_utls(
+    client_cfg: &WsClientConfig,
+    tcp_stream: TcpStream,
+    utls_config: &crate::tunnel::client::UtlsClientConfig,
+) -> anyhow::Result<crate::tunnel::transport::utls_connector::UtlsTlsStream> {
+    use crate::tunnel::transport::utls_connector::UtlsConnector;
+    
+    let tls_config = match &client_cfg.remote_addr {
+        TransportAddr::Wss { tls, .. } => tls,
+        TransportAddr::Https { tls, .. } => tls,
+        TransportAddr::Http { .. } | TransportAddr::Ws { .. } => {
+            return Err(anyhow!("Transport does not support TLS: {}", client_cfg.remote_addr.scheme()));
+        }
+    };
+    
+    // Get SNI as string - use host directly since IpAddress SNI is rare
+    let sni = match client_cfg.tls_server_name() {
+        tokio_rustls::rustls::pki_types::ServerName::DnsName(name) => name.as_ref().to_string(),
+        _ => client_cfg.remote_addr.host().to_string(),
+    };
+    
+    info!(
+        "Doing TLS handshake with uTLS {} fingerprint SNI {} with server {}:{}",
+        utls_config.fingerprint,
+        sni,
+        client_cfg.remote_addr.host(),
+        client_cfg.remote_addr.port()
+    );
+    
+    // Convert to internal config
+    let internal_config = utls_config.to_utls_config(tls_config.tls_verify_certificate);
+    
+    // Create connector and connect
+    let connector = UtlsConnector::new(internal_config)
+        .map_err(|e| anyhow!("Failed to create uTLS connector: {}", e))?;
+    
+    let tls_stream = connector.connect(tcp_stream, &sni)
+        .await
+        .map_err(|e| anyhow!("uTLS handshake failed: {}", e))?;
+    
     Ok(tls_stream)
 }

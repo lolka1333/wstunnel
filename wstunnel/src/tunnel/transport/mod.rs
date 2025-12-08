@@ -21,12 +21,20 @@ pub mod tls_fingerprint;
 mod types;
 pub mod websocket;
 
+// uTLS - Browser fingerprint TLS for DPI evasion
+pub mod utls;
+pub mod utls_connector;
+
 pub use jwt::JWT_HEADER_PREFIX;
 pub use jwt::JwtTunnelConfig;
 pub use jwt::jwt_token_to_tunnel;
 pub use jwt::tunnel_to_jwt_token;
 pub use types::TransportAddr;
 pub use types::TransportScheme;
+
+// uTLS re-exports
+pub use utls::{BrowserFingerprint, UtlsConfig, UtlsProfile};
+pub use utls_connector::{UtlsConnector, UtlsTlsStream};
 
 #[allow(clippy::type_complexity)]
 #[inline]

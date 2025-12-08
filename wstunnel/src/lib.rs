@@ -258,6 +258,31 @@ pub async fn create_client(
         None
     };
 
+    // uTLS configuration for browser fingerprint mimicry
+    let utls_config = if args.utls_fingerprint.is_some() {
+        use crate::tunnel::client::UtlsClientConfig;
+        use crate::tunnel::transport::utls::BrowserFingerprint;
+        
+        let fingerprint_str = args.utls_fingerprint.as_ref().unwrap();
+        let fingerprint = fingerprint_str.parse::<BrowserFingerprint>()
+            .unwrap_or_else(|_| {
+                warn!("Unknown uTLS fingerprint '{}', using Chrome", fingerprint_str);
+                BrowserFingerprint::Chrome120Windows
+            });
+        
+        info!("uTLS browser fingerprint enabled: {}", fingerprint);
+        
+        Some(UtlsClientConfig {
+            enabled: true,
+            fingerprint,
+            enable_grease: args.utls_enable_grease.unwrap_or(true),
+            enable_session_resumption: true,
+            enable_early_data: true,
+        })
+    } else {
+        None
+    };
+
     let client_config = WsClientConfig {
         remote_addr: TransportAddr::new(
             TransportScheme::from_str(args.remote_addr.scheme()).unwrap(),
@@ -283,6 +308,7 @@ pub async fn create_client(
         traffic_profile,
         adversarial_config,
         dpi_bypass_config,
+        utls_config,
     };
 
     let client = WsClient::new(

@@ -7,6 +7,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use crate::tunnel::transport::dpi_bypass::FragmentingTcpStream;
+use crate::tunnel::transport::utls_connector::UtlsTlsStream;
 
 pub struct TransportStream {
     read: TransportReadHalf,
@@ -38,6 +39,18 @@ impl TransportStream {
             write: TransportWriteHalf::TlsDpi(write),
         }
     }
+    
+    /// Create from uTLS stream with browser fingerprint mimicry
+    /// 
+    /// This provides complete browser TLS fingerprint for DPI evasion.
+    /// Uses BoringSSL with GREASE support when `utls` feature is enabled.
+    pub fn from_client_utls(tls: UtlsTlsStream, read_buf: Bytes) -> Self {
+        let (read, write) = tokio::io::split(tls);
+        Self {
+            read: TransportReadHalf::Utls(read, read_buf),
+            write: TransportWriteHalf::Utls(write),
+        }
+    }
 
     pub fn from_server_tls(tls: tokio_rustls::server::TlsStream<TcpStream>, read_buf: Bytes) -> Self {
         let (read, write) = tokio::io::split(tls);
@@ -66,6 +79,8 @@ pub enum TransportReadHalf {
     Tls(ReadHalf<tokio_rustls::client::TlsStream<TcpStream>>, Bytes),
     TlsDpi(ReadHalf<tokio_rustls::client::TlsStream<FragmentingTcpStream>>, Bytes),
     TlsSrv(ReadHalf<tokio_rustls::server::TlsStream<TcpStream>>, Bytes),
+    /// uTLS stream with browser fingerprint mimicry
+    Utls(ReadHalf<UtlsTlsStream>, Bytes),
 }
 
 impl TransportReadHalf {
@@ -75,6 +90,7 @@ impl TransportReadHalf {
             Self::Tls(_, buf) => buf,
             Self::TlsDpi(_, buf) => buf,
             Self::TlsSrv(_, buf) => buf,
+            Self::Utls(_, buf) => buf,
         }
     }
 }
@@ -84,6 +100,8 @@ pub enum TransportWriteHalf {
     Tls(WriteHalf<tokio_rustls::client::TlsStream<TcpStream>>),
     TlsDpi(WriteHalf<tokio_rustls::client::TlsStream<FragmentingTcpStream>>),
     TlsSrv(WriteHalf<tokio_rustls::server::TlsStream<TcpStream>>),
+    /// uTLS stream with browser fingerprint mimicry
+    Utls(WriteHalf<UtlsTlsStream>),
 }
 
 impl AsyncRead for TransportStream {
@@ -145,6 +163,7 @@ impl AsyncRead for TransportReadHalf {
             Self::Tls(cnx, _) => Pin::new(cnx).poll_read(cx, buf),
             Self::TlsDpi(cnx, _) => Pin::new(cnx).poll_read(cx, buf),
             Self::TlsSrv(cnx, _) => Pin::new(cnx).poll_read(cx, buf),
+            Self::Utls(cnx, _) => Pin::new(cnx).poll_read(cx, buf),
         }
     }
 }
@@ -157,6 +176,7 @@ impl AsyncWrite for TransportWriteHalf {
             Self::Tls(cnx) => Pin::new(cnx).poll_write(cx, buf),
             Self::TlsDpi(cnx) => Pin::new(cnx).poll_write(cx, buf),
             Self::TlsSrv(cnx) => Pin::new(cnx).poll_write(cx, buf),
+            Self::Utls(cnx) => Pin::new(cnx).poll_write(cx, buf),
         }
     }
 
@@ -167,6 +187,7 @@ impl AsyncWrite for TransportWriteHalf {
             Self::Tls(cnx) => Pin::new(cnx).poll_flush(cx),
             Self::TlsDpi(cnx) => Pin::new(cnx).poll_flush(cx),
             Self::TlsSrv(cnx) => Pin::new(cnx).poll_flush(cx),
+            Self::Utls(cnx) => Pin::new(cnx).poll_flush(cx),
         }
     }
 
@@ -177,6 +198,7 @@ impl AsyncWrite for TransportWriteHalf {
             Self::Tls(cnx) => Pin::new(cnx).poll_shutdown(cx),
             Self::TlsDpi(cnx) => Pin::new(cnx).poll_shutdown(cx),
             Self::TlsSrv(cnx) => Pin::new(cnx).poll_shutdown(cx),
+            Self::Utls(cnx) => Pin::new(cnx).poll_shutdown(cx),
         }
     }
 
@@ -191,6 +213,7 @@ impl AsyncWrite for TransportWriteHalf {
             Self::Tls(cnx) => Pin::new(cnx).poll_write_vectored(cx, bufs),
             Self::TlsDpi(cnx) => Pin::new(cnx).poll_write_vectored(cx, bufs),
             Self::TlsSrv(cnx) => Pin::new(cnx).poll_write_vectored(cx, bufs),
+            Self::Utls(cnx) => Pin::new(cnx).poll_write_vectored(cx, bufs),
         }
     }
 
@@ -201,6 +224,7 @@ impl AsyncWrite for TransportWriteHalf {
             Self::Tls(cnx) => cnx.is_write_vectored(),
             Self::TlsDpi(cnx) => cnx.is_write_vectored(),
             Self::TlsSrv(cnx) => cnx.is_write_vectored(),
+            Self::Utls(cnx) => cnx.is_write_vectored(),
         }
     }
 }

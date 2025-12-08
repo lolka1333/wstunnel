@@ -411,6 +411,39 @@ pub struct Client {
     ))]
     pub ip_fragmentation_first_size: u16,
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // uTLS Browser Fingerprint Options - Critical for DPI evasion!
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Enable uTLS browser TLS fingerprint mimicry
+    /// This makes wstunnel TLS connections look exactly like real browsers
+    /// Supported fingerprints: chrome, firefox, safari, edge, random
+    /// 
+    /// Examples:
+    ///   --utls-fingerprint chrome     => Mimic Chrome 120 on Windows
+    ///   --utls-fingerprint firefox    => Mimic Firefox 121 on Windows
+    ///   --utls-fingerprint safari     => Mimic Safari 17 on macOS
+    ///   --utls-fingerprint random     => Rotate between browser profiles
+    ///
+    /// This is CRITICAL for evading JA3/JA4 TLS fingerprinting used by DPI!
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        value_name = "BROWSER",
+        verbatim_doc_comment
+    ))]
+    pub utls_fingerprint: Option<String>,
+
+    /// Enable GREASE injection for uTLS (enabled by default)
+    /// GREASE (RFC 8701) is required for Chrome fingerprint authenticity
+    /// Without GREASE, the fingerprint is instantly detectable by ML-based DPI
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        default_value = "true",
+        verbatim_doc_comment,
+        requires = "utls_fingerprint"
+    ))]
+    pub utls_enable_grease: Option<bool>,
+
     /// Dns resolver to use to lookup ips of domain name. Can be specified multiple time
     /// Example:
     ///  dns://1.1.1.1 for using udp
