@@ -7,6 +7,7 @@ use std::str::FromStr;
 use tracing::error;
 
 pub mod adversarial_ml;
+pub mod alpn_profiles;
 pub mod cookies;
 pub mod dpi_bypass;
 pub mod http2;

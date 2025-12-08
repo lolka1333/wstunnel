@@ -268,11 +268,19 @@ impl UtlsProfile {
     /// Chrome 120 on Windows - Most common browser fingerprint
     /// 
     /// JA3: 771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513-21,29-23-24,0
+    /// 
+    /// ## 0-RTT Support
+    /// Chrome supports TLS 1.3 0-RTT (early data) with max_early_data_size = 16384 bytes
+    /// This provides faster reconnection times by sending application data in the first flight
     pub fn chrome_120_windows() -> Self {
         use cipher_suites::*;
         use extensions::*;
         use groups::*;
         use signature_algorithms::*;
+        
+        // Get dynamic ALPN protocols for Chrome
+        let alpn_protocols = super::alpn_profiles::get_alpn_profile_for_browser("chrome")
+            .get_protocols(0);
         
         Self {
             name: "Chrome 120 Windows".to_string(),
@@ -337,7 +345,7 @@ impl UtlsProfile {
                 RSA_PSS_RSAE_SHA512,
                 RSA_PKCS1_SHA512,
             ],
-            alpn_protocols: vec!["h2".to_string(), "http/1.1".to_string()],
+            alpn_protocols, // Use dynamic ALPN from alpn_profiles module
             compression_methods: vec![0x00], // Null compression
             session_ticket_lifetime: 604800, // 7 days
             psk_modes: vec![0x01], // psk_dhe_ke
@@ -375,6 +383,10 @@ impl UtlsProfile {
         use extensions::*;
         use groups::*;
         use signature_algorithms::*;
+        
+        // Get Android-specific ALPN
+        let alpn_protocols = super::alpn_profiles::get_alpn_profile_for_browser("chrome_android")
+            .get_protocols(0);
         
         Self {
             name: "Chrome Android".to_string(),
@@ -421,7 +433,7 @@ impl UtlsProfile {
                 RSA_PSS_RSAE_SHA384,
                 RSA_PKCS1_SHA384,
             ],
-            alpn_protocols: vec!["h2".to_string(), "http/1.1".to_string()],
+            alpn_protocols, // Android-specific ALPN
             compression_methods: vec![0x00],
             session_ticket_lifetime: 604800,
             psk_modes: vec![0x01],
@@ -443,11 +455,16 @@ impl UtlsProfile {
     /// - Different cipher suite order
     /// - Uses GREASE but less frequently
     /// - Different extension order
+    /// - May advertise HTTP/3 (h3) in ALPN
     pub fn firefox_121_windows() -> Self {
         use cipher_suites::*;
         use extensions::*;
         use groups::*;
         use signature_algorithms::*;
+        
+        // Firefox-specific ALPN (may include h3)
+        let alpn_protocols = super::alpn_profiles::get_alpn_profile_for_browser("firefox")
+            .get_protocols(0);
         
         Self {
             name: "Firefox 121 Windows".to_string(),
@@ -512,7 +529,7 @@ impl UtlsProfile {
                 ED25519,
                 ED448,
             ],
-            alpn_protocols: vec!["h2".to_string(), "http/1.1".to_string()],
+            alpn_protocols, // Firefox-specific ALPN
             compression_methods: vec![0x00],
             session_ticket_lifetime: 604800,
             psk_modes: vec![0x01],
@@ -542,11 +559,16 @@ impl UtlsProfile {
     /// - Prefers ECDSA over RSA
     /// - Different extension set
     /// - No GREASE
+    /// - Conservative ALPN (h2, http/1.1, rarely legacy spdy)
     pub fn safari_17_macos() -> Self {
         use cipher_suites::*;
         use extensions::*;
         use groups::*;
         use signature_algorithms::*;
+        
+        // Safari-specific ALPN
+        let alpn_protocols = super::alpn_profiles::get_alpn_profile_for_browser("safari")
+            .get_protocols(0);
         
         Self {
             name: "Safari 17 macOS".to_string(),
@@ -602,7 +624,7 @@ impl UtlsProfile {
                 RSA_PKCS1_SHA384,
                 RSA_PKCS1_SHA512,
             ],
-            alpn_protocols: vec!["h2".to_string(), "http/1.1".to_string()],
+            alpn_protocols, // Safari-specific ALPN
             compression_methods: vec![0x00],
             session_ticket_lifetime: 604800,
             psk_modes: vec![0x01, 0x00], // psk_dhe_ke, psk_ke
@@ -797,6 +819,9 @@ impl Default for UtlsConfig {
 impl UtlsConfig {
     /// Create config optimized for Russian DPI evasion
     pub fn russia_optimized() -> Self {
+        // Use dynamic ALPN for better fingerprint variation
+        let alpn_protocols = super::alpn_profiles::get_rotated_alpn_protocols("chrome");
+        
         Self {
             fingerprint: BrowserFingerprint::Chrome120Windows,
             custom_profile: None,
@@ -804,13 +829,16 @@ impl UtlsConfig {
             enable_session_resumption: true,
             enable_early_data: true,
             verify_certificate: false, // Many users disable for self-signed certs
-            alpn_protocols: vec!["h2".to_string(), "http/1.1".to_string()],
+            alpn_protocols,
             timeout: std::time::Duration::from_secs(30),
         }
     }
     
     /// Create config for maximum stealth
     pub fn maximum_stealth() -> Self {
+        // Randomize ALPN as well for maximum variation
+        let alpn_protocols = super::alpn_profiles::get_rotated_alpn_protocols("random");
+        
         Self {
             fingerprint: BrowserFingerprint::Randomized,
             custom_profile: None,
@@ -818,9 +846,29 @@ impl UtlsConfig {
             enable_session_resumption: true,
             enable_early_data: true,
             verify_certificate: true,
-            alpn_protocols: vec!["h2".to_string(), "http/1.1".to_string()],
+            alpn_protocols,
             timeout: std::time::Duration::from_secs(30),
         }
+    }
+    
+    /// Get ALPN protocols for specific browser fingerprint
+    /// 
+    /// This provides browser-specific ALPN protocols with optional variations
+    pub fn get_alpn_for_fingerprint(fingerprint: BrowserFingerprint) -> Vec<String> {
+        let browser_hint = match fingerprint {
+            BrowserFingerprint::Chrome120Windows
+            | BrowserFingerprint::Chrome120MacOS
+            | BrowserFingerprint::Chrome120Linux => "chrome",
+            BrowserFingerprint::ChromeAndroid => "chrome_android",
+            BrowserFingerprint::Firefox121Windows
+            | BrowserFingerprint::Firefox121MacOS => "firefox",
+            BrowserFingerprint::Safari17MacOS => "safari",
+            BrowserFingerprint::SafariIOS17 => "safari",
+            BrowserFingerprint::Edge120Windows => "edge",
+            BrowserFingerprint::Randomized | BrowserFingerprint::Custom => "chrome",
+        };
+        
+        super::alpn_profiles::get_rotated_alpn_protocols(browser_hint)
     }
     
     /// Get the effective profile

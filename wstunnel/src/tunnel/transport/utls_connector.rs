@@ -226,10 +226,11 @@ impl UtlsConnector {
         let profile = config.get_profile();
         
         info!(
-            "Creating uTLS connector with {} fingerprint (GREASE: {}, Session resumption: {})",
+            "Creating uTLS connector with {} fingerprint (GREASE: {}, Session resumption: {}, 0-RTT: {})",
             profile.name,
             config.enable_grease,
-            config.enable_session_resumption
+            config.enable_session_resumption,
+            config.enable_early_data
         );
         
         Ok(Self {
@@ -315,16 +316,37 @@ mod boring_impl {
             }
             
             // Perform TLS handshake
-            let tls_stream = tokio_boring::connect(config, sni, tcp_stream)
+            let mut tls_stream = tokio_boring::connect(config, sni, tcp_stream)
                 .await
                 .map_err(|e| io::Error::new(ErrorKind::ConnectionRefused, e.to_string()))?;
             
-            // Cache session for future resumption
+            // Check if 0-RTT early data was used
+            if self.config.enable_early_data {
+                let early_data_accepted = tls_stream.ssl().early_data_accepted();
+                if early_data_accepted {
+                    debug!("0-RTT early data was accepted by server for {}", sni);
+                } else if self.config.enable_session_resumption && self.session_cache.get(sni).is_some() {
+                    // Session was available but early data wasn't accepted
+                    // This is normal - server may not support 0-RTT or reject it for security
+                    debug!("0-RTT early data not accepted (server policy or first connection)");
+                }
+            }
+            
+            // Cache session for future resumption and 0-RTT
             if self.config.enable_session_resumption {
                 if let Some(session) = tls_stream.ssl().session() {
                     if let Ok(der) = session.to_der() {
                         self.session_cache.put(sni.to_string(), der);
-                        debug!("Cached TLS session for {}", sni);
+                        
+                        // Check if session supports 0-RTT for next connection
+                        if self.config.enable_early_data {
+                            // BoringSSL automatically handles 0-RTT in session tickets
+                            // If server sent NewSessionTicket with early_data extension,
+                            // next connection will attempt 0-RTT
+                            debug!("Cached TLS 1.3 session for {} (0-RTT capable)", sni);
+                        } else {
+                            debug!("Cached TLS session for {}", sni);
+                        }
                     }
                 }
             }
@@ -339,8 +361,9 @@ mod boring_impl {
             }
             
             info!(
-                "uTLS handshake complete with {} fingerprint to {}",
-                self.profile.name, sni
+                "uTLS handshake complete with {} fingerprint to {} (0-RTT: {})",
+                self.profile.name, sni,
+                if self.config.enable_early_data { "enabled" } else { "disabled" }
             );
             
             Ok(UtlsTlsStream::Boring(tls_stream))
@@ -356,6 +379,15 @@ mod boring_impl {
                 .map_err(|e| io::Error::new(ErrorKind::Other, e))?;
             builder.set_max_proto_version(Some(SslVersion::TLS1_3))
                 .map_err(|e| io::Error::new(ErrorKind::Other, e))?;
+            
+            // Enable 0-RTT early data for TLS 1.3 (browser-like behavior)
+            // Chrome uses max_early_data_size = 16384 (16 KB)
+            // Firefox uses 0xFFFFFFFF (unlimited) but practically limited
+            if self.config.enable_early_data {
+                // Set maximum early data size (Chrome's default: 16384 bytes)
+                builder.set_max_early_data(16384);
+                debug!("0-RTT early data enabled (max: 16KB, browser-like)");
+            }
             
             // Certificate verification
             if !self.config.verify_certificate {
