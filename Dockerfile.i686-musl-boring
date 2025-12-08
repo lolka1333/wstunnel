@@ -18,7 +18,9 @@ ENV GOROOT="/usr/lib/go"
 
 # Clone BoringSSL (same version as boring-sys 4.19.0 uses)
 WORKDIR /build
-RUN git clone --depth 1 https://boringssl.googlesource.com/boringssl
+RUN git clone --depth 1 https://boringssl.googlesource.com/boringssl && \
+    cd boringssl && \
+    sed -i 's/-Werror//g' CMakeLists.txt
 
 # Create CMake toolchain for i686-musl
 RUN mkdir -p /build/toolchain && \
@@ -36,7 +38,7 @@ RUN mkdir -p /build/toolchain && \
     echo 'set(OPENSSL_NO_ASM ON CACHE BOOL "Disable ASM")' >> /build/toolchain/i686-musl.cmake
 
 # Build BoringSSL
-# Note: Disable -Werror due to bitfield size issues on 32-bit arch
+# Note: -Werror removed from CMakeLists.txt via sed to fix bitfield issues on 32-bit
 RUN mkdir -p /build/boringssl/build && \
     cd /build/boringssl/build && \
     cmake .. \
@@ -45,8 +47,6 @@ RUN mkdir -p /build/boringssl/build && \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
         -DOPENSSL_NO_ASM=ON \
-        -DCMAKE_C_FLAGS="-Wno-error" \
-        -DCMAKE_CXX_FLAGS="-Wno-error" \
         -DCMAKE_INSTALL_PREFIX=/opt/boringssl && \
     ninja crypto ssl && \
     mkdir -p /opt/boringssl/lib /opt/boringssl/include && \

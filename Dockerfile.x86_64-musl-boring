@@ -2,8 +2,8 @@
 FROM ghcr.io/cross-rs/x86_64-unknown-linux-musl:0.2.5
 
 # Install dependencies for building BoringSSL
+# Note: musl toolchain is already in the base image, only need Go and perl
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    musl-tools \
     golang-go \
     perl \
     && rm -rf /var/lib/apt/lists/*
