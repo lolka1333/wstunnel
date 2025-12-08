@@ -53,7 +53,7 @@ jobs:
 
           - name: Android aarch64
             target: aarch64-linux-android
-            build-args: "--release --features=jemalloc,utls"
+            build-args: "--release --features=jemalloc"
 
           - name: Android armv7
             target: armv7-linux-androideabi

@@ -3,10 +3,13 @@ FROM ghcr.io/cross-rs/aarch64-unknown-linux-musl:0.2.5
 
 # Install dependencies for building BoringSSL
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    g++ \
     golang-go \
     perl \
     && rm -rf /var/lib/apt/lists/*
+
+# The cross image already has aarch64-linux-musl-gcc
+# We need to create a symlink for g++ to satisfy CMake
+RUN ln -s /usr/bin/aarch64-linux-musl-gcc /usr/bin/aarch64-linux-musl-g++
 
 # Set environment variables for BoringSSL build
 ENV CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc

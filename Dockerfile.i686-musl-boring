@@ -18,9 +18,7 @@ ENV GOROOT="/usr/lib/go"
 
 # Clone BoringSSL (same version as boring-sys 4.19.0 uses)
 WORKDIR /build
-RUN git clone --depth 1 https://boringssl.googlesource.com/boringssl && \
-    cd boringssl && \
-    git checkout master
+RUN git clone --depth 1 https://boringssl.googlesource.com/boringssl
 
 # Create CMake toolchain for i686-musl
 RUN mkdir -p /build/toolchain && \
