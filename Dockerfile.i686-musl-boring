@@ -5,6 +5,9 @@
 FROM ghcr.io/cross-rs/i686-unknown-linux-musl:0.2.5 AS boringssl-builder
 
 # Install build dependencies
+# Set DEBIAN_FRONTEND and TZ to prevent tzdata interactive prompt
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
     ninja-build \
@@ -57,6 +60,9 @@ RUN mkdir -p /build/boringssl/build && \
 FROM ghcr.io/cross-rs/i686-unknown-linux-musl:0.2.5
 
 # Install runtime dependencies
+# Set DEBIAN_FRONTEND and TZ to prevent tzdata interactive prompt
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
     ninja-build \
@@ -85,6 +91,12 @@ ENV RANLIB_i686_unknown_linux_musl=i686-linux-musl-ranlib
 
 # Tell Rust linker where to find BoringSSL libraries
 ENV CARGO_TARGET_I686_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-L /opt/boringssl/lib"
+
+# Create .cargo/config.toml to ensure boring-sys sees the pre-built BoringSSL
+RUN mkdir -p /root/.cargo && \
+    echo '[env]' > /root/.cargo/config.toml && \
+    echo 'BORING_BSSL_PATH = { value = "/opt/boringssl", force = true }' >> /root/.cargo/config.toml && \
+    echo 'BORING_BSSL_INCLUDE_PATH = { value = "/opt/boringssl/include", force = true }' >> /root/.cargo/config.toml
 
 ENV PATH="/usr/lib/go/bin:${PATH}"
 ENV GOROOT="/usr/lib/go"

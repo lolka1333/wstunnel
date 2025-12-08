@@ -1,6 +1,8 @@
 [build.env]
 passthrough = [
     "RUST_BACKTRACE",
+    "BORING_BSSL_PATH",
+    "BORING_BSSL_INCLUDE_PATH",
 ]
 
 # i686-unknown-linux-musl needs special setup for boring-sys (BoringSSL)
@@ -10,7 +12,13 @@ passthrough = [
 dockerfile = "Dockerfile.i686-musl-boring"
 
 [target.i686-unknown-linux-musl.env]
-passthrough = ["BORING_BSSL_PATH", "BORING_BSSL_INCLUDE_PATH"]
+passthrough = [
+    "BORING_BSSL_PATH",
+    "BORING_BSSL_INCLUDE_PATH",
+    "BORING_BSSL_PATH_i686_unknown_linux_musl",
+    "BORING_BSSL_INCLUDE_PATH_i686_unknown_linux_musl",
+    "CARGO_TARGET_I686_UNKNOWN_LINUX_MUSL_RUSTFLAGS",
+]
 volumes = []
 
 # x86_64 and aarch64: multi-stage build to pre-compile BoringSSL
@@ -18,12 +26,24 @@ volumes = []
 dockerfile = "Dockerfile.x86_64-musl-boring"
 
 [target.x86_64-unknown-linux-musl.env]
-passthrough = ["BORING_BSSL_PATH", "BORING_BSSL_INCLUDE_PATH"]
+passthrough = [
+    "BORING_BSSL_PATH",
+    "BORING_BSSL_INCLUDE_PATH",
+    "BORING_BSSL_PATH_x86_64_unknown_linux_musl",
+    "BORING_BSSL_INCLUDE_PATH_x86_64_unknown_linux_musl",
+    "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS",
+]
 volumes = []
 
 [target.aarch64-unknown-linux-musl]
 dockerfile = "Dockerfile.aarch64-musl-boring"
 
 [target.aarch64-unknown-linux-musl.env]
-passthrough = ["BORING_BSSL_PATH", "BORING_BSSL_INCLUDE_PATH"]
+passthrough = [
+    "BORING_BSSL_PATH",
+    "BORING_BSSL_INCLUDE_PATH",
+    "BORING_BSSL_PATH_aarch64_unknown_linux_musl",
+    "BORING_BSSL_INCLUDE_PATH_aarch64_unknown_linux_musl",
+    "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS",
+]
 volumes = []
