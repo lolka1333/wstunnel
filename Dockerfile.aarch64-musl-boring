@@ -1,22 +1,81 @@
-# Custom cross image for aarch64-unknown-linux-musl with BoringSSL support
-FROM ghcr.io/cross-rs/aarch64-unknown-linux-musl:0.2.5
+# Multi-stage build: first build BoringSSL for aarch64-musl, then use it for wstunnel
 
-# Install dependencies for building BoringSSL
+# Stage 1: Build BoringSSL for aarch64-unknown-linux-musl
+FROM ghcr.io/cross-rs/aarch64-unknown-linux-musl:0.2.5 AS boringssl-builder
+
+# Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake \
+    ninja-build \
     golang-go \
     perl \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-# The cross image already has aarch64-linux-musl-gcc
-# We need to create a symlink for g++ to satisfy CMake
-RUN ln -s /usr/bin/aarch64-linux-musl-gcc /usr/bin/aarch64-linux-musl-g++
+ENV PATH="/usr/lib/go/bin:${PATH}"
+ENV GOROOT="/usr/lib/go"
 
-# Set environment variables for BoringSSL build
+# Clone BoringSSL
+WORKDIR /build
+RUN git clone --depth 1 https://boringssl.googlesource.com/boringssl
+
+# Create CMake toolchain for aarch64-musl
+RUN mkdir -p /build/toolchain && \
+    echo 'set(CMAKE_SYSTEM_NAME Linux)' > /build/toolchain/aarch64-musl.cmake && \
+    echo 'set(CMAKE_SYSTEM_PROCESSOR aarch64)' >> /build/toolchain/aarch64-musl.cmake && \
+    echo 'set(CMAKE_C_COMPILER aarch64-linux-musl-gcc)' >> /build/toolchain/aarch64-musl.cmake && \
+    echo 'set(CMAKE_CXX_COMPILER aarch64-linux-musl-g++)' >> /build/toolchain/aarch64-musl.cmake && \
+    echo 'set(CMAKE_AR aarch64-linux-musl-ar CACHE FILEPATH "Archiver")' >> /build/toolchain/aarch64-musl.cmake && \
+    echo 'set(CMAKE_RANLIB aarch64-linux-musl-ranlib CACHE FILEPATH "Ranlib")' >> /build/toolchain/aarch64-musl.cmake && \
+    echo 'set(CMAKE_C_FLAGS "-fPIC" CACHE STRING "")' >> /build/toolchain/aarch64-musl.cmake && \
+    echo 'set(CMAKE_CXX_FLAGS "-fPIC" CACHE STRING "")' >> /build/toolchain/aarch64-musl.cmake && \
+    echo 'set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)' >> /build/toolchain/aarch64-musl.cmake && \
+    echo 'set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)' >> /build/toolchain/aarch64-musl.cmake && \
+    echo 'set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)' >> /build/toolchain/aarch64-musl.cmake
+
+# Build BoringSSL
+RUN mkdir -p /build/boringssl/build && \
+    cd /build/boringssl/build && \
+    cmake .. \
+        -GNinja \
+        -DCMAKE_TOOLCHAIN_FILE=/build/toolchain/aarch64-musl.cmake \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        -DCMAKE_INSTALL_PREFIX=/opt/boringssl && \
+    ninja crypto ssl && \
+    mkdir -p /opt/boringssl/lib /opt/boringssl/include && \
+    cp libcrypto.a libssl.a /opt/boringssl/lib/ && \
+    cp -r ../include/* /opt/boringssl/include/
+
+# Stage 2: Final cross image with pre-built BoringSSL
+FROM ghcr.io/cross-rs/aarch64-unknown-linux-musl:0.2.5
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake \
+    ninja-build \
+    golang-go \
+    perl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy pre-built BoringSSL
+COPY --from=boringssl-builder /opt/boringssl /opt/boringssl
+
+# Set environment variables for boring-sys to use pre-built BoringSSL
+ENV BORING_BSSL_PATH=/opt/boringssl
+ENV BORING_BSSL_INCLUDE_PATH=/opt/boringssl/include
+ENV BORING_BSSL_PATH_aarch64_unknown_linux_musl=/opt/boringssl
+ENV BORING_BSSL_INCLUDE_PATH_aarch64_unknown_linux_musl=/opt/boringssl/include
+
+# Set cross-compiler env vars
 ENV CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc
 ENV CXX_aarch64_unknown_linux_musl=aarch64-linux-musl-g++
 ENV AR_aarch64_unknown_linux_musl=aarch64-linux-musl-ar
 ENV RANLIB_aarch64_unknown_linux_musl=aarch64-linux-musl-ranlib
 
-# Ensure Go is in PATH (needed for BoringSSL build)
+# Tell Rust linker where to find BoringSSL libraries
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-L /opt/boringssl/lib"
+
 ENV PATH="/usr/lib/go/bin:${PATH}"
 ENV GOROOT="/usr/lib/go"

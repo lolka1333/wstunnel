@@ -83,5 +83,8 @@ ENV CXX_i686_unknown_linux_musl=i686-linux-musl-g++
 ENV AR_i686_unknown_linux_musl=i686-linux-musl-ar
 ENV RANLIB_i686_unknown_linux_musl=i686-linux-musl-ranlib
 
+# Tell Rust linker where to find BoringSSL libraries
+ENV CARGO_TARGET_I686_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-L /opt/boringssl/lib"
+
 ENV PATH="/usr/lib/go/bin:${PATH}"
 ENV GOROOT="/usr/lib/go"

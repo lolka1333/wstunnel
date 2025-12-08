@@ -9,9 +9,21 @@ passthrough = [
 [target.i686-unknown-linux-musl]
 dockerfile = "Dockerfile.i686-musl-boring"
 
-# x86_64 and aarch64 need g++ and Go for BoringSSL
+[target.i686-unknown-linux-musl.env]
+passthrough = ["BORING_BSSL_PATH", "BORING_BSSL_INCLUDE_PATH"]
+volumes = []
+
+# x86_64 and aarch64: multi-stage build to pre-compile BoringSSL
 [target.x86_64-unknown-linux-musl]
 dockerfile = "Dockerfile.x86_64-musl-boring"
 
+[target.x86_64-unknown-linux-musl.env]
+passthrough = ["BORING_BSSL_PATH", "BORING_BSSL_INCLUDE_PATH"]
+volumes = []
+
 [target.aarch64-unknown-linux-musl]
 dockerfile = "Dockerfile.aarch64-musl-boring"
+
+[target.aarch64-unknown-linux-musl.env]
+passthrough = ["BORING_BSSL_PATH", "BORING_BSSL_INCLUDE_PATH"]
+volumes = []
