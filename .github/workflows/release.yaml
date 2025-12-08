@@ -147,10 +147,10 @@ jobs:
 
       - name: Build ${{ matrix.platform.name }} binary
         uses: actions-rs/cargo@v1
-        # We use cross-rs if not running on x86_64 architecture on Linux
+        # We use cross-rs for all non-x86_64 targets, freebsd, and musl targets (for BoringSSL)
         with:
           command: build
-          use-cross: ${{ !contains(matrix.platform.target, 'x86_64') || contains(matrix.platform.target, 'freebsd') }}
+          use-cross: ${{ !contains(matrix.platform.target, 'x86_64') || contains(matrix.platform.target, 'freebsd') || contains(matrix.platform.target, 'musl') }}
           args: ${{ matrix.platform.build-args }} --bin wstunnel --target ${{ matrix.platform.target }}
 
       - name: Store artifact

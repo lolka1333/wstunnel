@@ -36,6 +36,7 @@ RUN mkdir -p /build/toolchain && \
     echo 'set(OPENSSL_NO_ASM ON CACHE BOOL "Disable ASM")' >> /build/toolchain/i686-musl.cmake
 
 # Build BoringSSL
+# Note: Disable -Werror due to bitfield size issues on 32-bit arch
 RUN mkdir -p /build/boringssl/build && \
     cd /build/boringssl/build && \
     cmake .. \
@@ -44,6 +45,8 @@ RUN mkdir -p /build/boringssl/build && \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
         -DOPENSSL_NO_ASM=ON \
+        -DCMAKE_C_FLAGS="-Wno-error" \
+        -DCMAKE_CXX_FLAGS="-Wno-error" \
         -DCMAKE_INSTALL_PREFIX=/opt/boringssl && \
     ninja crypto ssl && \
     mkdir -p /opt/boringssl/lib /opt/boringssl/include && \
