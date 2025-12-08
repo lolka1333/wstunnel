@@ -8,6 +8,7 @@ use tracing::error;
 
 pub mod adversarial_ml;
 pub mod alpn_profiles;
+pub mod certificate_transparency;
 pub mod cookies;
 pub mod dpi_bypass;
 pub mod http2;
@@ -17,6 +18,7 @@ mod jwt;
 pub mod packet_shaping;
 pub mod pcap_learning;
 pub mod sni_fragmentation;
+pub mod tcp_congestion;
 pub mod tcp_fragmentation;
 pub mod tls_fingerprint;
 mod types;
@@ -37,6 +39,17 @@ pub use types::TransportScheme;
 // uTLS re-exports
 pub use utls::{BrowserFingerprint, UtlsConfig, UtlsProfile};
 pub use utls_connector::{UtlsConnector, UtlsTlsStream};
+
+// Certificate Transparency re-exports
+pub use certificate_transparency::{
+    CertificateTransparencyConfig, CertificateTransparencyResult, CertificateTransparencyVerifier,
+};
+
+// TCP Congestion Control re-exports
+pub use tcp_congestion::{
+    CongestionControlAlgorithm, TcpCongestionConfig, TcpKeepaliveConfig, configure_tcp_congestion,
+    get_tcp_congestion_algorithm,
+};
 
 #[allow(clippy::type_complexity)]
 #[inline]

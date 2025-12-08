@@ -10,6 +10,7 @@ use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 
 use crate::protocols::dns::DnsResolver;
 use crate::somark::SoMark;
+use crate::tunnel::transport::TcpCongestionConfig;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
@@ -20,67 +21,62 @@ use tracing::{debug, instrument};
 use url::{Host, Url};
 
 pub fn configure_socket(socket: SockRef, so_mark: SoMark) -> Result<(), anyhow::Error> {
+    configure_socket_with_tcp_config(socket, so_mark, None)
+}
+
+/// Configure socket with custom TCP congestion control settings
+/// This version allows specifying browser-like TCP behavior for DPI evasion
+pub fn configure_socket_with_tcp_config(
+    socket: SockRef,
+    so_mark: SoMark,
+    tcp_config: Option<TcpCongestionConfig>,
+) -> Result<(), anyhow::Error> {
+    // Use Chrome-like defaults if not specified
+    let tcp_config = tcp_config.unwrap_or_else(TcpCongestionConfig::chrome_like);
+    
+    // Set TCP_NODELAY (Chrome always uses this)
     socket
-        .set_tcp_nodelay(true)
+        .set_tcp_nodelay(tcp_config.nodelay)
         .with_context(|| format!("cannot set no_delay on socket: {:?}", io::Error::last_os_error()))?;
 
-    // Optimize TCP buffers to match typical browser behavior and reduce DPI detection
-    // Chrome uses default TCP buffer sizes (typically 64KB-256KB), but we use realistic values
-    // to avoid statistical anomalies that aggressive DPI might flag
-    
-    // Set send/receive buffer sizes to common browser defaults (helps bypass TCP analysis)
-    // Most modern browsers use 64KB-256KB buffers, but we use 128KB as a good middle ground
-    const TCP_BUFFER_SIZE: usize = 128 * 1024; // 128KB - typical browser default
-    
-    if let Err(e) = socket.set_send_buffer_size(TCP_BUFFER_SIZE) {
-        debug!("Cannot set TCP send buffer size: {:?}", e);
+    // Set buffer sizes to match browser behavior
+    if let Some(size) = tcp_config.send_buffer_size {
+        if let Err(e) = socket.set_send_buffer_size(size) {
+            debug!("Cannot set TCP send buffer size: {:?}", e);
+        }
     }
-    if let Err(e) = socket.set_recv_buffer_size(TCP_BUFFER_SIZE) {
-        debug!("Cannot set TCP recv buffer size: {:?}", e);
+    
+    if let Some(size) = tcp_config.recv_buffer_size {
+        if let Err(e) = socket.set_recv_buffer_size(size) {
+            debug!("Cannot set TCP recv buffer size: {:?}", e);
+        }
     }
 
-    // ✅ TCP Congestion Control and initcwnd - Chrome/modern browsers behavior
-    //
-    // Chrome uses initcwnd=10 segments (RFC 6928 standard) which is the default
-    // on modern Linux (3.0+), Windows 10+, and macOS 10.10+
-    //
-    // Note: initcwnd is a system-wide setting and cannot be set per-socket:
-    // - Linux: sysctl net.ipv4.tcp_init_cwnd (default=10 since kernel 3.0)
-    // - Windows: Registry HKLM\System\CurrentControlSet\Services\Tcpip\Parameters\TcpInitialCongestionWindow
-    // - macOS: kern.ipc.tcp_init_cwnd
-    //
-    // What we CAN do: Ensure TCP congestion control algorithm matches browser behavior
+    // ✅ TCP Congestion Control - Browser-like behavior
+    // Chrome/Firefox use CUBIC on Linux, CTCP on Windows
+    // initcwnd=10 (RFC 6928) is system-wide, not per-socket
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsRawFd;
         
-        // Set TCP congestion control to match modern browsers
-        // Chrome/Firefox use the system default (usually Cubic or BBR on modern kernels)
-        // BBR (Bottleneck Bandwidth and RTT) is preferred for better performance
-        unsafe {
-            let fd = socket.as_raw_fd();
-            
-            // Try BBR first (Linux 4.9+), fallback to Cubic
-            // Both algorithms use initcwnd=10 (RFC 6928) which matches Chrome
-            let congestion_algs: &[&[u8]] = &[b"bbr\0", b"cubic\0"];
-            
-            for alg in congestion_algs {
+        let alg_name = tcp_config.algorithm.as_str();
+        if alg_name != "default" {
+            unsafe {
+                let fd = socket.as_raw_fd();
+                
                 let result = nix::libc::setsockopt(
                     fd,
                     nix::libc::IPPROTO_TCP,
                     nix::libc::TCP_CONGESTION,
-                    alg.as_ptr() as *const nix::libc::c_void,
-                    (alg.len() - 1) as nix::libc::socklen_t, // -1 to exclude null terminator
+                    alg_name.as_ptr() as *const nix::libc::c_void,
+                    alg_name.len() as nix::libc::socklen_t,
                 );
                 
                 if result == 0 {
-                    debug!("TCP congestion control set to: {}", 
-                        std::str::from_utf8(&alg[..alg.len()-1]).unwrap_or("unknown"));
-                    break;
+                    info!("TCP congestion control set to: {} (browser-like)", alg_name);
                 } else {
                     debug!("Failed to set TCP congestion to {}: {:?}", 
-                        std::str::from_utf8(&alg[..alg.len()-1]).unwrap_or("unknown"),
-                        std::io::Error::last_os_error());
+                        alg_name, std::io::Error::last_os_error());
                 }
             }
         }
@@ -89,23 +85,51 @@ pub fn configure_socket(socket: SockRef, so_mark: SoMark) -> Result<(), anyhow::
     // On Windows and macOS, TCP congestion control is managed by the OS
     // Modern versions already use appropriate algorithms with initcwnd=10
 
-    #[cfg(not(any(target_os = "windows", target_os = "openbsd")))]
-    let tcp_keepalive = TcpKeepalive::new()
-        .with_time(Duration::from_secs(60))
-        .with_interval(Duration::from_secs(10))
-        .with_retries(3);
+    // Set TCP keepalive based on config
+    if let Some(ka_config) = tcp_config.keepalive {
+        if ka_config.enabled {
+            #[cfg(not(any(target_os = "windows", target_os = "openbsd")))]
+            let tcp_keepalive = TcpKeepalive::new()
+                .with_time(Duration::from_secs(ka_config.time as u64))
+                .with_interval(Duration::from_secs(ka_config.interval as u64))
+                .with_retries(ka_config.probes);
 
-    #[cfg(target_os = "windows")]
-    let tcp_keepalive = TcpKeepalive::new()
-        .with_time(Duration::from_secs(60))
-        .with_interval(Duration::from_secs(10));
+            #[cfg(target_os = "windows")]
+            let tcp_keepalive = TcpKeepalive::new()
+                .with_time(Duration::from_secs(ka_config.time as u64))
+                .with_interval(Duration::from_secs(ka_config.interval as u64));
 
-    #[cfg(target_os = "openbsd")]
-    let tcp_keepalive = TcpKeepalive::new().with_time(Duration::from_secs(60));
+            #[cfg(target_os = "openbsd")]
+            let tcp_keepalive = TcpKeepalive::new()
+                .with_time(Duration::from_secs(ka_config.time as u64));
 
-    socket
-        .set_tcp_keepalive(&tcp_keepalive)
-        .with_context(|| format!("cannot set tcp_keepalive on socket: {:?}", io::Error::last_os_error()))?;
+            socket
+                .set_tcp_keepalive(&tcp_keepalive)
+                .with_context(|| format!("cannot set tcp_keepalive on socket: {:?}", io::Error::last_os_error()))?;
+            
+            debug!("TCP keepalive configured: time={}s, interval={}s", 
+                ka_config.time, ka_config.interval);
+        }
+    } else {
+        // Default keepalive if not specified
+        #[cfg(not(any(target_os = "windows", target_os = "openbsd")))]
+        let tcp_keepalive = TcpKeepalive::new()
+            .with_time(Duration::from_secs(60))
+            .with_interval(Duration::from_secs(10))
+            .with_retries(3);
+
+        #[cfg(target_os = "windows")]
+        let tcp_keepalive = TcpKeepalive::new()
+            .with_time(Duration::from_secs(60))
+            .with_interval(Duration::from_secs(10));
+
+        #[cfg(target_os = "openbsd")]
+        let tcp_keepalive = TcpKeepalive::new().with_time(Duration::from_secs(60));
+
+        socket
+            .set_tcp_keepalive(&tcp_keepalive)
+            .with_context(|| format!("cannot set tcp_keepalive on socket: {:?}", io::Error::last_os_error()))?;
+    }
 
     so_mark.set_mark(socket).context("cannot set SO_MARK on socket")?;
 

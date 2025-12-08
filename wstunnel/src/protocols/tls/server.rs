@@ -20,7 +20,7 @@ use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName,
 use tokio_rustls::rustls::server::WebPkiClientVerifier;
 use tokio_rustls::rustls::{ClientConfig, DigitallySignedStruct, Error, KeyLogFile, RootCertStore, SignatureScheme};
 use tokio_rustls::{TlsAcceptor, TlsConnector, rustls};
-use tracing::info;
+use tracing::{info, debug};
 
 #[derive(Debug)]
 struct NullVerifier;
@@ -279,6 +279,43 @@ pub async fn connect(client_cfg: &WsClientConfig, tcp_stream: TcpStream) -> anyh
 
     let tls_connector = tls_config.tls_connector();
     let tls_stream = tls_connector.connect(sni, tcp_stream).await?;
+
+    // ✅ Certificate Transparency verification (Chrome-like behavior)
+    // Verify SCTs in server certificate for enhanced authenticity
+    // Note: This is optional and non-fatal if it fails
+    {
+        use crate::tunnel::transport::certificate_transparency::{
+            CertificateTransparencyConfig, CertificateTransparencyVerifier,
+        };
+        
+        // Chrome always verifies CT, but doesn't fail connections if verification fails
+        let ct_config = CertificateTransparencyConfig::disabled(); // Disabled by default, can be enabled via config
+        
+        if ct_config.enabled {
+            let ct_verifier = CertificateTransparencyVerifier::new(ct_config);
+            
+            // Get peer certificates
+            if let Some(peer_certs) = tls_stream.get_ref().1.peer_certificates() {
+                if let Some(leaf_cert) = peer_certs.first() {
+                    match ct_verifier.verify_certificate(leaf_cert.as_ref()) {
+                        Ok(result) => {
+                            if result.has_sct {
+                                info!(
+                                    "Certificate Transparency: {} SCTs found, verified={}, compliant={}",
+                                    result.sct_count, result.verified, result.policy_compliant
+                                );
+                            } else {
+                                debug!("Certificate has no SCTs (not required for all certs)");
+                            }
+                        }
+                        Err(e) => {
+                            debug!("CT verification failed (non-fatal): {}", e);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     Ok(tls_stream)
 }

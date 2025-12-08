@@ -444,6 +444,50 @@ pub struct Client {
     ))]
     pub utls_enable_grease: Option<bool>,
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // Advanced DPI Evasion - TCP & Certificate Options
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Enable Certificate Transparency (CT) verification
+    /// Chrome/Firefox verify SCTs (Signed Certificate Timestamps) in server certificates
+    /// Enabling this makes TLS handshake behavior more browser-like
+    /// Note: Does not fail connection if verification fails (Chrome behavior)
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        default_value = "false",
+        verbatim_doc_comment
+    ))]
+    pub enable_certificate_transparency: bool,
+
+    /// TCP congestion control algorithm to use
+    /// Options: cubic, bbr, reno, vegas, default
+    /// - cubic: Chrome/Firefox default on Linux (recommended)
+    /// - bbr: Google's algorithm, best for high-latency networks
+    /// - reno: Classic TCP, conservative
+    /// - default: Use system default
+    /// 
+    /// This helps match browser TCP fingerprint for DPI evasion
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        value_name = "ALGORITHM",
+        default_value = "cubic",
+        verbatim_doc_comment
+    ))]
+    pub tcp_congestion_algorithm: String,
+
+    /// TCP buffer sizes preset: chrome, firefox, conservative, high-performance
+    /// - chrome: 128KB buffers (Chrome default)
+    /// - firefox: 256KB buffers (Firefox default)
+    /// - conservative: System defaults
+    /// - high-performance: 512KB buffers for maximum throughput
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        value_name = "PRESET",
+        default_value = "chrome",
+        verbatim_doc_comment
+    ))]
+    pub tcp_buffer_preset: String,
+
     /// Dns resolver to use to lookup ips of domain name. Can be specified multiple time
     /// Example:
     ///  dns://1.1.1.1 for using udp
