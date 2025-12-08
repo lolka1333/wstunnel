@@ -19,11 +19,11 @@ ENV PATH="/usr/lib/go/bin:${PATH}"
 ENV GOROOT="/usr/lib/go"
 
 # Clone BoringSSL with specific commit compatible with boring-sys 4.19.0
-# Use commit from before September 2025 (before SSL_CURVE_SECP224R1 was removed)
+# Use commit from early 2024 (before SSL_CURVE_* was renamed to SSL_GROUP_*)
 WORKDIR /build
 RUN git clone https://boringssl.googlesource.com/boringssl && \
     cd boringssl && \
-    git checkout $(git log --all --before="2025-08-31" --format="%H" | head -1) && \
+    git checkout $(git log --all --before="2024-06-01" --format="%H" | head -1) && \
     sed -i 's/-Werror//g' CMakeLists.txt
 
 # Create CMake toolchain for x86_64-musl
@@ -94,6 +94,7 @@ RUN mkdir -p /.cargo && \
     echo '[env]' > /.cargo/config.toml && \
     echo 'BORING_BSSL_PATH = "/opt/boringssl"' >> /.cargo/config.toml && \
     echo 'BORING_BSSL_INCLUDE_PATH = "/opt/boringssl/include"' >> /.cargo/config.toml && \
+    echo 'BORING_BSSL_ASSUME_PATCHED = "1"' >> /.cargo/config.toml && \
     chmod 644 /.cargo/config.toml
 
 ENV PATH="/usr/lib/go/bin:${PATH}"
