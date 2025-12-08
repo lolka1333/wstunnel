@@ -29,7 +29,7 @@ jobs:
             target: i686-unknown-linux-musl
             # Uses custom Cross.toml + Dockerfile.i686-musl-boring for BoringSSL/uTLS support
             # Multi-stage build: pre-builds BoringSSL with musl cross-compiler
-            build-args: "--release --no-default-features --features aws-lc-rs-bindgen,utls"
+            build-args: "--release --no-default-features --features aws-lc-rs,aws-lc-rs-bindgen,utls"
 
           - name: Linux aarch64
             target: aarch64-unknown-linux-musl
