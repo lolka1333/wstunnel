@@ -1,0 +1,86 @@
+# Multi-stage build: first build BoringSSL for i686-musl, then use it for wstunnel
+# This bypasses boring-sys's attempt to use host gcc with -m32
+
+# Stage 1: Build BoringSSL for i686-unknown-linux-musl
+FROM ghcr.io/cross-rs/i686-unknown-linux-musl:0.2.5 AS boringssl-builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake \
+    ninja-build \
+    golang-go \
+    perl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/usr/lib/go/bin:${PATH}"
+ENV GOROOT="/usr/lib/go"
+
+# Clone BoringSSL (same version as boring-sys 4.19.0 uses)
+WORKDIR /build
+RUN git clone --depth 1 https://boringssl.googlesource.com/boringssl && \
+    cd boringssl && \
+    git checkout master
+
+# Create CMake toolchain for i686-musl
+RUN mkdir -p /build/toolchain && \
+    echo 'set(CMAKE_SYSTEM_NAME Linux)' > /build/toolchain/i686-musl.cmake && \
+    echo 'set(CMAKE_SYSTEM_PROCESSOR i686)' >> /build/toolchain/i686-musl.cmake && \
+    echo 'set(CMAKE_C_COMPILER i686-linux-musl-gcc)' >> /build/toolchain/i686-musl.cmake && \
+    echo 'set(CMAKE_CXX_COMPILER i686-linux-musl-g++)' >> /build/toolchain/i686-musl.cmake && \
+    echo 'set(CMAKE_AR i686-linux-musl-ar CACHE FILEPATH "Archiver")' >> /build/toolchain/i686-musl.cmake && \
+    echo 'set(CMAKE_RANLIB i686-linux-musl-ranlib CACHE FILEPATH "Ranlib")' >> /build/toolchain/i686-musl.cmake && \
+    echo 'set(CMAKE_C_FLAGS "-fPIC -ffunction-sections -fdata-sections" CACHE STRING "")' >> /build/toolchain/i686-musl.cmake && \
+    echo 'set(CMAKE_CXX_FLAGS "-fPIC -ffunction-sections -fdata-sections" CACHE STRING "")' >> /build/toolchain/i686-musl.cmake && \
+    echo 'set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)' >> /build/toolchain/i686-musl.cmake && \
+    echo 'set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)' >> /build/toolchain/i686-musl.cmake && \
+    echo 'set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)' >> /build/toolchain/i686-musl.cmake && \
+    echo 'set(OPENSSL_NO_ASM ON CACHE BOOL "Disable ASM")' >> /build/toolchain/i686-musl.cmake
+
+# Build BoringSSL
+RUN mkdir -p /build/boringssl/build && \
+    cd /build/boringssl/build && \
+    cmake .. \
+        -GNinja \
+        -DCMAKE_TOOLCHAIN_FILE=/build/toolchain/i686-musl.cmake \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        -DOPENSSL_NO_ASM=ON \
+        -DCMAKE_INSTALL_PREFIX=/opt/boringssl && \
+    ninja crypto ssl && \
+    mkdir -p /opt/boringssl/lib /opt/boringssl/include && \
+    cp crypto/libcrypto.a ssl/libssl.a /opt/boringssl/lib/ && \
+    cp -r ../include/* /opt/boringssl/include/
+
+# Stage 2: Final cross image with pre-built BoringSSL
+FROM ghcr.io/cross-rs/i686-unknown-linux-musl:0.2.5
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake \
+    ninja-build \
+    golang-go \
+    perl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy pre-built BoringSSL
+COPY --from=boringssl-builder /opt/boringssl /opt/boringssl
+
+# Set environment variables for boring-sys to use pre-built BoringSSL
+# These env vars tell boring-sys to skip building and use our pre-built version
+ENV BORING_BSSL_PATH=/opt/boringssl
+ENV BORING_BSSL_INCLUDE_PATH=/opt/boringssl/include
+
+# Also set target-specific variants
+ENV BORING_BSSL_PATH_i686_unknown_linux_musl=/opt/boringssl
+ENV BORING_BSSL_INCLUDE_PATH_i686_unknown_linux_musl=/opt/boringssl/include
+
+# Set cross-compiler env vars for the rest of the build
+ENV CC_i686_unknown_linux_musl=i686-linux-musl-gcc
+ENV CXX_i686_unknown_linux_musl=i686-linux-musl-g++
+ENV AR_i686_unknown_linux_musl=i686-linux-musl-ar
+ENV RANLIB_i686_unknown_linux_musl=i686-linux-musl-ranlib
+
+ENV PATH="/usr/lib/go/bin:${PATH}"
+ENV GOROOT="/usr/lib/go"

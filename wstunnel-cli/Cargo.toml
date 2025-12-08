@@ -15,11 +15,13 @@ wstunnel = { path = "../wstunnel", default-features = false, features = ["clap"]
 tikv-jemallocator = { version = "0.6", optional = true }
 
 [features]
-default = ["aws-lc-rs"]
+default = ["aws-lc-rs", "utls"]
 jemalloc = ["dep:tikv-jemallocator"]
 aws-lc-rs = ["wstunnel/aws-lc-rs"]
 ring = ["wstunnel/ring"]
 aws-lc-rs-bindgen = ["wstunnel/aws-lc-rs-bindgen"]
+# uTLS: BoringSSL-based browser fingerprint mimicry (Chrome, Firefox, Safari, Edge)
+utls = ["wstunnel/utls"]
 
 [[bin]]
 name = "wstunnel"

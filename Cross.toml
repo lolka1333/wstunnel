@@ -1,0 +1,16 @@
+[build.env]
+passthrough = [
+    "RUST_BACKTRACE",
+]
+
+# i686-unknown-linux-musl needs special setup for boring-sys (BoringSSL)
+# The default cross image doesn't have 32-bit toolchain for building BoringSSL
+[target.i686-unknown-linux-musl]
+dockerfile = "Dockerfile.i686-musl-boring"
+
+# Alternative targets that work out of the box
+[target.x86_64-unknown-linux-musl]
+# Default image works fine
+
+[target.aarch64-unknown-linux-musl]
+# Default image works fine
