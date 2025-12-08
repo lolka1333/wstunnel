@@ -11,6 +11,7 @@ pub mod cookies;
 pub mod dpi_bypass;
 pub mod http2;
 pub mod io;
+pub mod ip_fragmentation;
 mod jwt;
 pub mod packet_shaping;
 pub mod pcap_learning;

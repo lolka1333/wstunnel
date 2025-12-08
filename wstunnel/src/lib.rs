@@ -236,6 +236,20 @@ pub async fn create_client(
                 fragment_first_bytes: 600,
                 split_tls_record_header: args.dpi_bypass_split_tls_record,
                 split_sni_at_dots: args.dpi_bypass_split_sni_dots,
+                ip_fragmentation: if args.ip_fragmentation {
+                    crate::tunnel::transport::ip_fragmentation::IpFragmentationConfig {
+                        enabled: true,
+                        mtu_size: args.ip_fragmentation_mtu,
+                        disable_pmtu_discovery: args.ip_fragmentation_disable_pmtud,
+                        clear_df_bit: args.ip_fragmentation_disable_pmtud,
+                        first_fragment_size: args.ip_fragmentation_first_size,
+                        enable_overlap: false,
+                        reverse_order: false,
+                        fragment_ttl: 0,
+                    }
+                } else {
+                    crate::tunnel::transport::ip_fragmentation::IpFragmentationConfig::disabled()
+                },
             },
             _ => DpiBypassConfig::russia(), // Default to russia preset
         };

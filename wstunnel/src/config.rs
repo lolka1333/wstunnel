@@ -350,6 +350,67 @@ pub struct Client {
     ))]
     pub dpi_bypass_split_sni_dots: bool,
 
+    /// Enable IP-level fragmentation for DPI bypass
+    /// Forces the OS to fragment IP packets, which can confuse stateless DPI
+    /// Works best with small MTU values (68-576)
+    /// May require admin/root privileges on some systems
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        default_value = "false",
+        verbatim_doc_comment
+    ))]
+    pub ip_fragmentation: bool,
+
+    /// MTU size for IP fragmentation (default: 576)
+    /// Smaller values = more fragments = harder for DPI to reassemble
+    /// Common values: 68 (minimum), 296 (Russia), 576 (safe), 1280 (IPv6 min)
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        value_name = "SIZE",
+        default_value = "576",
+        verbatim_doc_comment,
+        requires = "ip_fragmentation"
+    ))]
+    pub ip_fragmentation_mtu: u16,
+
+    /// IP fragmentation preset configuration
+    /// Options: russia, aggressive, conservative, minimal
+    /// - russia: MTU=296, optimized for Russian TSPU
+    /// - aggressive: MTU=68, maximum fragmentation
+    /// - conservative: MTU=1280, less likely to break connectivity
+    /// - minimal: MTU=576, balanced approach
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        value_name = "PRESET",
+        default_value = "minimal",
+        verbatim_doc_comment,
+        requires = "ip_fragmentation"
+    ))]
+    pub ip_fragmentation_preset: String,
+
+    /// Disable Path MTU Discovery (PMTUD) to allow IP fragmentation
+    /// Critical for enabling fragmentation through the network path
+    /// Clears the "Don't Fragment" (DF) bit in IP headers
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        default_value = "true",
+        verbatim_doc_comment,
+        requires = "ip_fragmentation"
+    ))]
+    pub ip_fragmentation_disable_pmtud: bool,
+
+    /// First IP fragment size (0 = use MTU)
+    /// Smaller first fragment can split TCP/TLS headers from payload
+    /// Recommended: 68 for aggressive, 0 for normal
+    #[cfg_attr(feature = "clap", arg(
+        long,
+        value_name = "SIZE",
+        default_value = "0",
+        verbatim_doc_comment,
+        requires = "ip_fragmentation"
+    ))]
+    pub ip_fragmentation_first_size: u16,
+
     /// Dns resolver to use to lookup ips of domain name. Can be specified multiple time
     /// Example:
     ///  dns://1.1.1.1 for using udp

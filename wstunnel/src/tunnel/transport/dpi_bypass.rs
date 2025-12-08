@@ -19,6 +19,7 @@ use tokio::net::TcpStream;
 
 use super::tcp_fragmentation::{TcpFragmentConfig, FragmentationStrategy, fragment_data};
 use super::adversarial_ml::{AdversarialConfig, generate_crypto_padding};
+use super::ip_fragmentation::IpFragmentationConfig;
 
 /// DPI bypass configuration
 #[derive(Debug, Clone)]
@@ -48,6 +49,10 @@ pub struct DpiBypassConfig {
     /// Split SNI hostname at each dot
     /// Разделяет "www.example.com" на части: "www" | "." | "example" | "." | "com"
     pub split_sni_at_dots: bool,
+    
+    /// IP-level fragmentation configuration
+    /// Forces OS to fragment IP packets, confusing stateless DPI
+    pub ip_fragmentation: IpFragmentationConfig,
 }
 
 impl Default for DpiBypassConfig {
@@ -61,6 +66,7 @@ impl Default for DpiBypassConfig {
             fragment_first_bytes: 600,
             split_tls_record_header: false,
             split_sni_at_dots: false,
+            ip_fragmentation: IpFragmentationConfig::disabled(),
         }
     }
 }
@@ -82,6 +88,7 @@ impl DpiBypassConfig {
             fragment_first_bytes: 600,
             split_tls_record_header: true,   // Включено для ТСПУ
             split_sni_at_dots: true,         // Включено для ТСПУ
+            ip_fragmentation: IpFragmentationConfig::russia(),
         }
     }
     
@@ -97,6 +104,7 @@ impl DpiBypassConfig {
             fragment_first_bytes: 600,
             split_tls_record_header: true,
             split_sni_at_dots: true,
+            ip_fragmentation: IpFragmentationConfig::aggressive(),
         }
     }
     
@@ -117,6 +125,7 @@ impl DpiBypassConfig {
             fragment_first_bytes: 600,
             split_tls_record_header: true,   // Критично
             split_sni_at_dots: true,         // Критично
+            ip_fragmentation: IpFragmentationConfig::minimal(),
         }
     }
     
@@ -143,6 +152,86 @@ impl DpiBypassConfig {
             split_tls_record_header: self.split_tls_record_header,
             split_sni_at_dots: self.split_sni_at_dots,
         }
+    }
+    
+    /// Get IP fragmentation configuration
+    pub fn to_ip_fragment_config(&self) -> IpFragmentationConfig {
+        self.ip_fragmentation.clone()
+    }
+    
+    /// Check if IP fragmentation is enabled
+    pub fn is_ip_fragmentation_enabled(&self) -> bool {
+        self.ip_fragmentation.enabled
+    }
+    
+    /// Create configuration from CLI parameters
+    pub fn from_cli_params(
+        dpi_bypass: bool,
+        preset: &str,
+        fragment_size: usize,
+        split_tls_record: bool,
+        split_sni_dots: bool,
+        ip_frag_enabled: bool,
+        ip_frag_mtu: u16,
+        ip_frag_preset: &str,
+        ip_frag_disable_pmtud: bool,
+        ip_frag_first_size: u16,
+    ) -> Self {
+        if !dpi_bypass {
+            return Self::default();
+        }
+        
+        // Start with preset
+        let mut config = match preset.to_lowercase().as_str() {
+            "russia" => Self::russia(),
+            "aggressive" => Self::russia_aggressive(),
+            "minimal" => Self::minimal(),
+            _ => Self::russia(), // Default to russia preset
+        };
+        
+        // Override with specific parameters if they differ from defaults
+        if fragment_size != 40 {
+            config.fragment_size = fragment_size;
+        }
+        if split_tls_record {
+            config.split_tls_record_header = true;
+        }
+        if split_sni_dots {
+            config.split_sni_at_dots = true;
+        }
+        
+        // Configure IP fragmentation
+        if ip_frag_enabled {
+            config.ip_fragmentation = match ip_frag_preset.to_lowercase().as_str() {
+                "russia" => IpFragmentationConfig::russia(),
+                "aggressive" => IpFragmentationConfig::aggressive(),
+                "conservative" => IpFragmentationConfig::conservative(),
+                "minimal" => IpFragmentationConfig::minimal(),
+                _ => {
+                    // Custom configuration
+                    IpFragmentationConfig {
+                        enabled: true,
+                        mtu_size: ip_frag_mtu,
+                        disable_pmtu_discovery: ip_frag_disable_pmtud,
+                        clear_df_bit: ip_frag_disable_pmtud,
+                        first_fragment_size: ip_frag_first_size,
+                        enable_overlap: false,
+                        reverse_order: false,
+                        fragment_ttl: 0,
+                    }
+                }
+            };
+            
+            // Override MTU if explicitly specified
+            if ip_frag_mtu != 576 {
+                config.ip_fragmentation.mtu_size = ip_frag_mtu;
+            }
+            if ip_frag_first_size > 0 {
+                config.ip_fragmentation.first_fragment_size = ip_frag_first_size;
+            }
+        }
+        
+        config
     }
 }
 
@@ -410,6 +499,7 @@ mod tests {
         assert_eq!(config.fragment_size, 40);
         assert!(!config.split_tls_record_header);
         assert!(!config.split_sni_at_dots);
+        assert!(!config.ip_fragmentation.enabled);
     }
     
     #[test]
@@ -420,6 +510,8 @@ mod tests {
         assert!(config.adversarial_padding);
         assert!(config.split_tls_record_header);
         assert!(config.split_sni_at_dots);
+        assert!(config.ip_fragmentation.enabled);
+        assert_eq!(config.ip_fragmentation.mtu_size, 296);
     }
     
     #[test]
@@ -429,6 +521,8 @@ mod tests {
         assert!(config.split_tls_record_header);
         assert!(config.split_sni_at_dots);
         assert_eq!(config.fragment_size, 1); // Single-byte fragmentation
+        assert!(config.ip_fragmentation.enabled);
+        assert_eq!(config.ip_fragmentation.mtu_size, 68);
     }
     
     #[test]
@@ -439,6 +533,40 @@ mod tests {
         assert!(config.split_sni_at_dots);
         assert!(!config.sni_case_randomization);
         assert!(!config.adversarial_padding);
+        assert!(config.ip_fragmentation.enabled);
+    }
+    
+    #[test]
+    fn test_ip_fragmentation_config() {
+        let config = DpiBypassConfig::russia();
+        let ip_config = config.to_ip_fragment_config();
+        
+        assert!(ip_config.enabled);
+        assert_eq!(ip_config.mtu_size, 296);
+        assert!(ip_config.disable_pmtu_discovery);
+        assert!(ip_config.clear_df_bit);
+    }
+    
+    #[test]
+    fn test_from_cli_params() {
+        // Test with IP fragmentation enabled
+        let config = DpiBypassConfig::from_cli_params(
+            true,      // dpi_bypass
+            "russia",  // preset
+            40,        // fragment_size
+            true,      // split_tls_record
+            true,      // split_sni_dots
+            true,      // ip_frag_enabled
+            296,       // ip_frag_mtu
+            "russia",  // ip_frag_preset
+            true,      // ip_frag_disable_pmtud
+            68,        // ip_frag_first_size
+        );
+        
+        assert!(config.tcp_fragmentation);
+        assert!(config.ip_fragmentation.enabled);
+        assert_eq!(config.ip_fragmentation.mtu_size, 296);
+        assert_eq!(config.ip_fragmentation.first_fragment_size, 68);
     }
     
     #[test]
