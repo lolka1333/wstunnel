@@ -50,7 +50,7 @@ RUN mkdir -p /build/boringssl/build && \
         -DCMAKE_INSTALL_PREFIX=/opt/boringssl && \
     ninja crypto ssl && \
     mkdir -p /opt/boringssl/lib /opt/boringssl/include && \
-    cp crypto/libcrypto.a ssl/libssl.a /opt/boringssl/lib/ && \
+    cp libcrypto.a libssl.a /opt/boringssl/lib/ && \
     cp -r ../include/* /opt/boringssl/include/
 
 # Stage 2: Final cross image with pre-built BoringSSL
