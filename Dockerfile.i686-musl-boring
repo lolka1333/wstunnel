@@ -19,10 +19,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV PATH="/usr/lib/go/bin:${PATH}"
 ENV GOROOT="/usr/lib/go"
 
-# Clone BoringSSL (same version as boring-sys 4.19.0 uses)
+# Clone BoringSSL with specific commit compatible with boring-sys 4.19.0
+# Use commit from before September 2025 (before SSL_CURVE_SECP224R1 was removed)
 WORKDIR /build
-RUN git clone --depth 1 https://boringssl.googlesource.com/boringssl && \
+RUN git clone https://boringssl.googlesource.com/boringssl && \
     cd boringssl && \
+    git checkout $(git log --all --before="2025-08-31" --format="%H" | head -1) && \
     sed -i 's/-Werror//g' CMakeLists.txt
 
 # Create CMake toolchain for i686-musl
