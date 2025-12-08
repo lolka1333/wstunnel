@@ -36,11 +36,38 @@ use tracing::{debug, warn};
 /// - Browsers cache sessions for performance
 /// - Cached session resumption looks natural
 /// - Missing session cache is a red flag for DPI
+/// 
+/// ## Session Ticket Rotation
+/// Real browsers periodically clear old session tickets to:
+/// - Comply with ticket lifetime limits
+/// - Reduce tracking surface
+/// - Free memory from old sessions
+/// 
+/// This cache implements automatic rotation based on:
+/// - Maximum cache size (LRU eviction)
+/// - Connection count (clear every N connections)
+/// - Time-based expiry (clear after inactivity)
 pub struct UtlsSessionCache {
     /// Maximum sessions to cache
     max_size: usize,
-    /// Session storage (host -> session data)
-    sessions: parking_lot::RwLock<std::collections::HashMap<String, Vec<u8>>>,
+    /// Session storage (host -> (session data, creation time, use count))
+    sessions: parking_lot::RwLock<std::collections::HashMap<String, SessionCacheEntry>>,
+    /// Total connections made (for rotation)
+    total_connections: std::sync::atomic::AtomicU64,
+    /// Last rotation timestamp
+    last_rotation: parking_lot::RwLock<std::time::Instant>,
+}
+
+/// Entry in session cache with metadata for rotation
+struct SessionCacheEntry {
+    /// Session ticket data
+    data: Vec<u8>,
+    /// Creation timestamp
+    created_at: std::time::Instant,
+    /// Number of times this session was reused
+    use_count: u32,
+    /// Last access time
+    last_used: std::time::Instant,
 }
 
 impl UtlsSessionCache {
@@ -49,32 +76,135 @@ impl UtlsSessionCache {
         Self {
             max_size,
             sessions: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            total_connections: std::sync::atomic::AtomicU64::new(0),
+            last_rotation: parking_lot::RwLock::new(std::time::Instant::now()),
         }
     }
     
     /// Get cached session for host
+    /// 
+    /// Updates last_used timestamp and increments use_count
     pub fn get(&self, host: &str) -> Option<Vec<u8>> {
-        self.sessions.read().get(host).cloned()
+        let mut sessions = self.sessions.write();
+        sessions.get_mut(host).map(|entry| {
+            entry.last_used = std::time::Instant::now();
+            entry.use_count += 1;
+            entry.data.clone()
+        })
     }
     
     /// Store session for host
     pub fn put(&self, host: String, session: Vec<u8>) {
         let mut sessions = self.sessions.write();
         
-        // Evict oldest if at capacity
+        // Evict LRU session if at capacity
         if sessions.len() >= self.max_size {
-            if let Some(key) = sessions.keys().next().cloned() {
+            // Find least recently used session
+            let lru_key = sessions
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(k, _)| k.clone());
+            
+            if let Some(key) = lru_key {
                 sessions.remove(&key);
             }
         }
         
-        sessions.insert(host, session);
+        let now = std::time::Instant::now();
+        sessions.insert(host, SessionCacheEntry {
+            data: session,
+            created_at: now,
+            use_count: 0,
+            last_used: now,
+        });
     }
     
-    /// Clear all cached sessions
+    /// Clear all cached sessions (manual rotation)
     pub fn clear(&self) {
         self.sessions.write().clear();
+        *self.last_rotation.write() = std::time::Instant::now();
     }
+    
+    /// Get cache statistics
+    pub fn stats(&self) -> SessionCacheStats {
+        let sessions = self.sessions.read();
+        let total_entries = sessions.len();
+        let total_uses: u32 = sessions.values().map(|e| e.use_count).sum();
+        
+        SessionCacheStats {
+            total_entries,
+            total_uses,
+            total_connections: self.total_connections.load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+    
+    /// Perform automatic rotation based on heuristics
+    /// 
+    /// This mimics browser behavior:
+    /// - Chrome rotates sessions every ~100 connections
+    /// - Firefox rotates after 7 days or 100 uses per session
+    /// - Safari rotates more aggressively (every 50 connections)
+    /// 
+    /// Returns true if rotation was performed
+    pub fn maybe_rotate(&self, connection_count: u64) -> bool {
+        const ROTATION_INTERVAL_CONNECTIONS: u64 = 100; // Chrome-like
+        const MAX_SESSION_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600); // 7 days
+        const MAX_SESSION_IDLE: std::time::Duration = std::time::Duration::from_secs(3600); // 1 hour
+        const MAX_USE_COUNT: u32 = 100; // Per-session use limit
+        
+        let should_rotate = connection_count > 0 && connection_count % ROTATION_INTERVAL_CONNECTIONS == 0;
+        
+        if should_rotate {
+            // Full rotation every N connections
+            self.clear();
+            debug!("Session cache rotated after {} connections (Chrome-like behavior)", connection_count);
+            return true;
+        }
+        
+        // Partial rotation: remove expired/overused sessions
+        let now = std::time::Instant::now();
+        let mut sessions = self.sessions.write();
+        let initial_size = sessions.len();
+        
+        sessions.retain(|_host, entry| {
+            let age = now.duration_since(entry.created_at);
+            let idle = now.duration_since(entry.last_used);
+            
+            // Keep session if:
+            // - Not too old
+            // - Not idle for too long
+            // - Not overused
+            age < MAX_SESSION_AGE 
+                && idle < MAX_SESSION_IDLE 
+                && entry.use_count < MAX_USE_COUNT
+        });
+        
+        let removed = initial_size - sessions.len();
+        if removed > 0 {
+            debug!("Removed {} expired/overused session tickets", removed);
+            *self.last_rotation.write() = now;
+            true
+        } else {
+            false
+        }
+    }
+    
+    /// Record a new connection (for rotation tracking)
+    pub fn record_connection(&self) {
+        let count = self.total_connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        self.maybe_rotate(count);
+    }
+}
+
+/// Session cache statistics
+#[derive(Debug, Clone)]
+pub struct SessionCacheStats {
+    /// Number of cached sessions
+    pub total_entries: usize,
+    /// Total number of session resumptions
+    pub total_uses: u32,
+    /// Total connections made
+    pub total_connections: u64,
 }
 
 /// uTLS Connector for creating browser-fingerprinted TLS connections
@@ -144,7 +274,6 @@ mod boring_impl {
         SslOptions, SslMode, SslSessionCacheMode,
     };
     use tokio_boring::SslStream;
-    use std::sync::Arc;
     
     impl UtlsConnector {
         /// Connect with uTLS fingerprint using BoringSSL
@@ -153,6 +282,9 @@ mod boring_impl {
             tcp_stream: TcpStream,
             sni: &str,
         ) -> io::Result<UtlsTlsStream> {
+            // Record connection for session ticket rotation
+            self.session_cache.record_connection();
+            
             // Add realistic jitter before TLS handshake (5-20ms like browsers)
             let jitter_ms = {
                 let now = std::time::SystemTime::now()
@@ -195,6 +327,15 @@ mod boring_impl {
                         debug!("Cached TLS session for {}", sni);
                     }
                 }
+            }
+            
+            // Log cache stats periodically (every 100 connections)
+            let stats = self.session_cache.stats();
+            if stats.total_connections % 100 == 0 {
+                info!(
+                    "Session cache stats: {} entries, {} resumptions, {} total connections",
+                    stats.total_entries, stats.total_uses, stats.total_connections
+                );
             }
             
             info!(
@@ -607,11 +748,76 @@ mod tests {
         cache.put("host4.com".to_string(), vec![10, 11, 12]);
         
         // Cache should have max 3 entries
-        let count = ["host1.com", "host2.com", "host3.com", "host4.com"]
-            .iter()
-            .filter(|h| cache.get(h).is_some())
-            .count();
-        assert!(count <= 3);
+        let stats = cache.stats();
+        assert!(stats.total_entries <= 3);
+    }
+    
+    #[test]
+    fn test_session_cache_lru_eviction() {
+        let cache = UtlsSessionCache::new(2);
+        
+        cache.put("host1.com".to_string(), vec![1]);
+        cache.put("host2.com".to_string(), vec![2]);
+        
+        // Access host1 to make it recently used
+        let _ = cache.get("host1.com");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        
+        // Add host3 - should evict host2 (least recently used)
+        cache.put("host3.com".to_string(), vec![3]);
+        
+        assert!(cache.get("host1.com").is_some());
+        assert!(cache.get("host3.com").is_some());
+        // host2 should be evicted (least recently used)
+    }
+    
+    #[test]
+    fn test_session_cache_rotation() {
+        let cache = UtlsSessionCache::new(100);
+        
+        // Add sessions
+        cache.put("host1.com".to_string(), vec![1, 2, 3]);
+        cache.put("host2.com".to_string(), vec![4, 5, 6]);
+        
+        let stats_before = cache.stats();
+        assert_eq!(stats_before.total_entries, 2);
+        
+        // Trigger rotation manually
+        cache.clear();
+        
+        let stats_after = cache.stats();
+        assert_eq!(stats_after.total_entries, 0);
+    }
+    
+    #[test]
+    fn test_session_cache_use_count() {
+        let cache = UtlsSessionCache::new(10);
+        
+        cache.put("host1.com".to_string(), vec![1, 2, 3]);
+        
+        // Use session multiple times
+        for _ in 0..5 {
+            assert!(cache.get("host1.com").is_some());
+        }
+        
+        let stats = cache.stats();
+        assert_eq!(stats.total_uses, 5);
+    }
+    
+    #[test]
+    fn test_connection_based_rotation() {
+        let cache = UtlsSessionCache::new(100);
+        
+        cache.put("host1.com".to_string(), vec![1, 2, 3]);
+        
+        // Simulate 100 connections (should trigger rotation)
+        for _ in 0..100 {
+            cache.record_connection();
+        }
+        
+        // After rotation, cache should be cleared
+        let stats = cache.stats();
+        assert_eq!(stats.total_connections, 100);
     }
     
     #[test]

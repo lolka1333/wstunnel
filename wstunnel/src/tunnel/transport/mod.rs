@@ -20,6 +20,7 @@ pub mod tcp_fragmentation;
 pub mod tls_fingerprint;
 mod types;
 pub mod websocket;
+pub mod ws_masking;
 
 // uTLS - Browser fingerprint TLS for DPI evasion
 pub mod utls;
