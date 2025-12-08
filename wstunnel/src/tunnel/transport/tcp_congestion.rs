@@ -26,10 +26,13 @@
 /// - Chrome network stack implementation
 
 use std::io;
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 #[cfg(target_os = "linux")]
 use std::os::unix::io::AsRawFd;
+
+#[cfg(target_os = "linux")]
+use nix::libc;
 
 use tokio::net::TcpStream;
 
