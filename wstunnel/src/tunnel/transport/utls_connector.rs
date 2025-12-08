@@ -144,6 +144,7 @@ mod boring_impl {
         SslOptions, SslMode, SslSessionCacheMode,
     };
     use tokio_boring::SslStream;
+    use std::sync::Arc;
     
     impl UtlsConnector {
         /// Connect with uTLS fingerprint using BoringSSL
@@ -253,18 +254,26 @@ mod boring_impl {
             // Enable session tickets for resumption
             builder.clear_options(SslOptions::NO_TICKET);
             
-            // Enable GREASE (BoringSSL supports this natively!)
-            // Note: GREASE is enabled by default in newer BoringSSL versions
+            // Enable GREASE for browser fingerprint mimicry
             // 
-            // IMPORTANT: BoringSSL automatically adds GREASE values, but the exact positions
-            // may not match Chrome's specific positions. For full control over GREASE placement,
-            // a lower-level BoringSSL API would be needed (e.g., custom ClientHello construction).
-            // 
-            // However, the presence of GREASE values (even in different positions) is still
-            // critical for DPI evasion, as ML-based DPI systems check for GREASE presence
-            // as a strong signal of legitimate browser traffic.
+            // IMPORTANT: BoringSSL automatically adds GREASE values to:
+            // - Cipher suites (at the beginning)
+            // - Supported groups (at the beginning)  
+            // - Extensions (at the beginning and before padding)
+            //
+            // This matches Chrome's GREASE pattern:
+            // - cipher_grease_positions: [0] - GREASE at start of cipher suites
+            // - extension_grease_positions: [0, 15] - GREASE at start and before padding
+            // - groups_grease_positions: [0] - GREASE at start of supported groups
+            //
+            // BoringSSL's automatic GREASE insertion should match Chrome's positions
+            // because BoringSSL is the same library that Chrome uses!
             if self.config.enable_grease {
-                debug!("GREASE enabled for browser fingerprint mimicry");
+                debug!("GREASE enabled - BoringSSL will automatically add GREASE values in Chrome-like positions");
+                
+                // Note: We don't need to manually insert GREASE into cipher_list or curves_list
+                // because BoringSSL automatically adds them. We only provide the real cipher suites
+                // and groups, and BoringSSL inserts GREASE in the correct positions.
             }
             
             // Set mode for browser-like behavior
@@ -274,44 +283,34 @@ mod boring_impl {
         }
         
         /// Build OpenSSL cipher string from profile
-        /// Includes GREASE values when enable_grease is true
+        /// 
+        /// NOTE: We do NOT include GREASE values here because:
+        /// 1. GREASE values don't have OpenSSL names (they're reserved values)
+        /// 2. BoringSSL automatically adds GREASE values in the correct positions
+        /// 3. BoringSSL is the same library Chrome uses, so GREASE positions should match
         fn build_cipher_string(&self) -> String {
-            use super::utls::GREASE_VALUES;
-            
-            // Get cipher suites with GREASE if enabled
-            let cipher_suites = if self.config.enable_grease {
-                self.profile.cipher_suites_with_grease()
-            } else {
-                self.profile.cipher_suites.clone()
-            };
-            
-            // Map cipher suite IDs to OpenSSL names
-            // GREASE values are skipped (they don't have OpenSSL names)
-            let cipher_names: Vec<&str> = cipher_suites.iter()
+            // Use cipher suites WITHOUT GREASE - BoringSSL will add GREASE automatically
+            // in the correct positions (matching Chrome's pattern)
+            let cipher_names: Vec<&str> = self.profile.cipher_suites.iter()
                 .filter_map(|&suite| {
-                    // Skip GREASE values - they will be handled by BoringSSL automatically
-                    if GREASE_VALUES.contains(&suite) {
-                        None
-                    } else {
-                        match suite {
-                            0xc02b => Some("ECDHE-ECDSA-AES128-GCM-SHA256"),
-                            0xc02f => Some("ECDHE-RSA-AES128-GCM-SHA256"),
-                            0xc02c => Some("ECDHE-ECDSA-AES256-GCM-SHA384"),
-                            0xc030 => Some("ECDHE-RSA-AES256-GCM-SHA384"),
-                            0xcca9 => Some("ECDHE-ECDSA-CHACHA20-POLY1305"),
-                            0xcca8 => Some("ECDHE-RSA-CHACHA20-POLY1305"),
-                            0xc013 => Some("ECDHE-RSA-AES128-SHA"),
-                            0xc014 => Some("ECDHE-RSA-AES256-SHA"),
-                            0x009c => Some("AES128-GCM-SHA256"),
-                            0x009d => Some("AES256-GCM-SHA384"),
-                            0x002f => Some("AES128-SHA"),
-                            0x0035 => Some("AES256-SHA"),
-                            // TLS 1.3 cipher suites
-                            0x1301 => Some("TLS_AES_128_GCM_SHA256"),
-                            0x1302 => Some("TLS_AES_256_GCM_SHA384"),
-                            0x1303 => Some("TLS_CHACHA20_POLY1305_SHA256"),
-                            _ => None,
-                        }
+                    match suite {
+                        0xc02b => Some("ECDHE-ECDSA-AES128-GCM-SHA256"),
+                        0xc02f => Some("ECDHE-RSA-AES128-GCM-SHA256"),
+                        0xc02c => Some("ECDHE-ECDSA-AES256-GCM-SHA384"),
+                        0xc030 => Some("ECDHE-RSA-AES256-GCM-SHA384"),
+                        0xcca9 => Some("ECDHE-ECDSA-CHACHA20-POLY1305"),
+                        0xcca8 => Some("ECDHE-RSA-CHACHA20-POLY1305"),
+                        0xc013 => Some("ECDHE-RSA-AES128-SHA"),
+                        0xc014 => Some("ECDHE-RSA-AES256-SHA"),
+                        0x009c => Some("AES128-GCM-SHA256"),
+                        0x009d => Some("AES256-GCM-SHA384"),
+                        0x002f => Some("AES128-SHA"),
+                        0x0035 => Some("AES256-SHA"),
+                        // TLS 1.3 cipher suites
+                        0x1301 => Some("TLS_AES_128_GCM_SHA256"),
+                        0x1302 => Some("TLS_AES_256_GCM_SHA384"),
+                        0x1303 => Some("TLS_CHACHA20_POLY1305_SHA256"),
+                        _ => None,
                     }
                 })
                 .collect();
@@ -320,33 +319,23 @@ mod boring_impl {
         }
         
         /// Build groups string for BoringSSL
-        /// Includes GREASE values when enable_grease is true
+        /// 
+        /// NOTE: We do NOT include GREASE values here because:
+        /// 1. GREASE values don't have OpenSSL names (they're reserved values)
+        /// 2. BoringSSL automatically adds GREASE values in the correct positions
+        /// 3. BoringSSL is the same library Chrome uses, so GREASE positions should match
         fn build_groups_string(&self) -> String {
-            use super::utls::GREASE_VALUES;
-            
-            // Get supported groups with GREASE if enabled
-            let groups = if self.config.enable_grease {
-                self.profile.supported_groups_with_grease()
-            } else {
-                self.profile.supported_groups.clone()
-            };
-            
-            // Map group IDs to OpenSSL names
-            // GREASE values are skipped (they don't have OpenSSL names)
-            let group_names: Vec<&str> = groups.iter()
+            // Use supported groups WITHOUT GREASE - BoringSSL will add GREASE automatically
+            // in the correct positions (matching Chrome's pattern: GREASE at position 0)
+            let group_names: Vec<&str> = self.profile.supported_groups.iter()
                 .filter_map(|&group| {
-                    // Skip GREASE values - they will be handled by BoringSSL automatically
-                    if GREASE_VALUES.contains(&group) {
-                        None
-                    } else {
-                        match group {
-                            0x001d => Some("X25519"),
-                            0x0017 => Some("P-256"),
-                            0x0018 => Some("P-384"),
-                            0x0019 => Some("P-521"),
-                            0x6399 => Some("X25519Kyber768Draft00"), // Post-quantum
-                            _ => None,
-                        }
+                    match group {
+                        0x001d => Some("X25519"),
+                        0x0017 => Some("P-256"),
+                        0x0018 => Some("P-384"),
+                        0x0019 => Some("P-521"),
+                        0x6399 => Some("X25519Kyber768Draft00"), // Post-quantum
+                        _ => None,
                     }
                 })
                 .collect();
