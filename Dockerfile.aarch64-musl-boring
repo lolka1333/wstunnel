@@ -1,0 +1,19 @@
+# Custom cross image for aarch64-unknown-linux-musl with BoringSSL support
+FROM ghcr.io/cross-rs/aarch64-unknown-linux-musl:0.2.5
+
+# Install dependencies for building BoringSSL
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    g++ \
+    golang-go \
+    perl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set environment variables for BoringSSL build
+ENV CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc
+ENV CXX_aarch64_unknown_linux_musl=aarch64-linux-musl-g++
+ENV AR_aarch64_unknown_linux_musl=aarch64-linux-musl-ar
+ENV RANLIB_aarch64_unknown_linux_musl=aarch64-linux-musl-ranlib
+
+# Ensure Go is in PATH (needed for BoringSSL build)
+ENV PATH="/usr/lib/go/bin:${PATH}"
+ENV GOROOT="/usr/lib/go"

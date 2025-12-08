@@ -15,7 +15,8 @@ wstunnel = { path = "../wstunnel", default-features = false, features = ["clap"]
 tikv-jemallocator = { version = "0.6", optional = true }
 
 [features]
-default = ["aws-lc-rs", "utls"]
+# Default: aws-lc-rs only (uTLS opt-in per-target basis)
+default = ["aws-lc-rs"]
 jemalloc = ["dep:tikv-jemallocator"]
 aws-lc-rs = ["wstunnel/aws-lc-rs"]
 ring = ["wstunnel/ring"]

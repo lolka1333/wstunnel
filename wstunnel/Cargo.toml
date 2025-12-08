@@ -86,8 +86,8 @@ get_if_addrs = "0.5.3"
 pcap-file = "2.0.0"  # For PCAP analysis tests
 
 [features]
-# Default: включает aws-lc-rs и uTLS для полной поддержки browser fingerprint mimicry
-default = ["aws-lc-rs", "utls"]
+# Default: включает aws-lc-rs (uTLS opt-in через CLI default features)
+default = ["aws-lc-rs"]
 clap = ["dep:clap"]
 pcap-learning = ["dep:pcap-file"]  # Enable PCAP-based traffic learning
 # uTLS: Enable BoringSSL-based browser fingerprint mimicry (Chrome, Firefox, Safari, Edge)

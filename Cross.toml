@@ -5,12 +5,13 @@ passthrough = [
 
 # i686-unknown-linux-musl needs special setup for boring-sys (BoringSSL)
 # The default cross image doesn't have 32-bit toolchain for building BoringSSL
+# Multi-stage build pre-compiles BoringSSL with correct musl cross-compiler
 [target.i686-unknown-linux-musl]
 dockerfile = "Dockerfile.i686-musl-boring"
 
-# Alternative targets that work out of the box
+# x86_64 and aarch64 need g++ and Go for BoringSSL
 [target.x86_64-unknown-linux-musl]
-# Default image works fine
+dockerfile = "Dockerfile.x86_64-musl-boring"
 
 [target.aarch64-unknown-linux-musl]
-# Default image works fine
+dockerfile = "Dockerfile.aarch64-musl-boring"

@@ -23,7 +23,7 @@ jobs:
           # Linux
           - name: Linux x86_64
             target: x86_64-unknown-linux-musl
-            build-args: "--release --features=jemalloc"
+            build-args: "--release --features=jemalloc,utls"
 
           - name: Linux x86
             target: i686-unknown-linux-musl
@@ -33,7 +33,7 @@ jobs:
 
           - name: Linux aarch64
             target: aarch64-unknown-linux-musl
-            build-args: "--release --features=jemalloc"
+            build-args: "--release --features=jemalloc,utls"
 
           - name: Linux armv7hf
             target: armv7-unknown-linux-musleabihf
@@ -53,7 +53,7 @@ jobs:
 
           - name: Android aarch64
             target: aarch64-linux-android
-            build-args: "--release --features=jemalloc"
+            build-args: "--release --features=jemalloc,utls"
 
           - name: Android armv7
             target: armv7-linux-androideabi
@@ -69,12 +69,12 @@ jobs:
           - name: MacOS x86_64
             os: macos-latest
             target: x86_64-apple-darwin
-            build-args: "--release --features=jemalloc"
+            build-args: "--release --features=jemalloc,utls"
 
           - name: MacOS aarch64
             os: macos-latest
             target: aarch64-apple-darwin
-            build-args: "--release --features=jemalloc"
+            build-args: "--release --features=jemalloc,utls"
 
           # - name: iOS x86_64
           #   target: x86_64-apple-ios
@@ -88,7 +88,7 @@ jobs:
           - name: Windows x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            build-args: "--profile release-with-symbols"
+            build-args: "--profile release-with-symbols --features=utls"
 
           - name: Windows x86
             os: windows-latest
