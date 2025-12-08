@@ -92,11 +92,12 @@ ENV RANLIB_i686_unknown_linux_musl=i686-linux-musl-ranlib
 # Tell Rust linker where to find BoringSSL libraries
 ENV CARGO_TARGET_I686_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-L /opt/boringssl/lib"
 
-# Create .cargo/config.toml to ensure boring-sys sees the pre-built BoringSSL
-RUN mkdir -p /root/.cargo && \
-    echo '[env]' > /root/.cargo/config.toml && \
-    echo 'BORING_BSSL_PATH = { value = "/opt/boringssl", force = true }' >> /root/.cargo/config.toml && \
-    echo 'BORING_BSSL_INCLUDE_PATH = { value = "/opt/boringssl/include", force = true }' >> /root/.cargo/config.toml
+# Create symbolic link for BoringSSL library discovery
+# boring-sys sometimes looks in standard locations
+RUN mkdir -p /usr/local/lib /usr/local/include && \
+    ln -sf /opt/boringssl/lib/libcrypto.a /usr/local/lib/ && \
+    ln -sf /opt/boringssl/lib/libssl.a /usr/local/lib/ && \
+    ln -sf /opt/boringssl/include/openssl /usr/local/include/
 
 ENV PATH="/usr/lib/go/bin:${PATH}"
 ENV GOROOT="/usr/lib/go"
