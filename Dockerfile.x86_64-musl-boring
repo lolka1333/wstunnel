@@ -53,12 +53,14 @@ RUN mkdir -p /build/boringssl/build && \
     ninja crypto ssl && \
     mkdir -p /opt/boringssl/lib /opt/boringssl/include && \
     cp libcrypto.a libssl.a /opt/boringssl/lib/ && \
-    if [ -d ../include ]; then \
+    if [ -d ../include/openssl ]; then \
+        cp -r ../include/openssl /opt/boringssl/include/; \
+    elif [ -d ../include ]; then \
         cp -r ../include/* /opt/boringssl/include/; \
-    elif [ -d ../crypto/include ]; then \
+    elif [ -d ../crypto/include/openssl ]; then \
         cp -r ../crypto/include/openssl /opt/boringssl/include/; \
     else \
-        ninja install || cmake --install . --prefix /opt/boringssl; \
+        find .. -name "*.h" -path "*/include/openssl/*" -exec mkdir -p /opt/boringssl/include/openssl \; -exec cp {} /opt/boringssl/include/openssl/ \; || true; \
     fi
 
 # Stage 2: Final cross image with pre-built BoringSSL
